@@ -17,12 +17,7 @@ const table = (head: string[], rows: unknown[][]): string[] => [
   ...rows.map((r) => row(...r)),
 ];
 
-export function renderStyleGuideMd(args: {
-  seedResult: SeedResult;
-  theme: Theme;
-  fontPair: FontPair | null;
-  fontsUrl: string;
-}): string {
+export function renderStyleGuideMd(args: { seedResult: SeedResult; theme: Theme; fontPair: FontPair | null; fontsUrl: string }): string {
   const { seedResult, theme, fontPair, fontsUrl } = args;
   const seed = seedResult.seed;
   const other: Mode = seed.baseMode === "light" ? "dark" : "light";
@@ -90,13 +85,7 @@ export function renderStyleGuideMd(args: {
     out.push(
       ...table(
         ["文字", "背景", "比", "基準", "結果"],
-        theme.modes[mode].checks.map((c) => [
-          c.fg,
-          c.bg,
-          c.ratio,
-          c.min,
-          !c.pass ? "FAIL" : c.adjusted ? "pass (補正)" : "pass",
-        ]),
+        theme.modes[mode].checks.map((c) => [c.fg, c.bg, c.ratio, c.min, !c.pass ? "FAIL" : c.adjusted ? "pass (補正)" : "pass"]),
       ),
       "",
     );

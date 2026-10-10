@@ -18,12 +18,40 @@ const INDEX_PATH = fileURLToPath(new URL("./index.html", import.meta.url));
 // 共通 Jev クライアント (SHARED/jev.mjs) を動的 import する
 type JevModule = {
   DEFAULT_ENDPOINT: string;
-  JevError: new (...args: any[]) => Error & { code: string; status: number };
+  JevError: new (...args: never[]) => Error & { code: string; status: number };
   getApiKey: (env?: NodeJS.ProcessEnv) => string | null;
-  callJev: (args: { state: unknown; questions: Record<string, Question>; model: string; endpoint?: string }) => Promise<{ answers: Estimate }>;
+  callJev: (args: {
+    state: unknown;
+    questions: Record<string, Question>;
+    model: string;
+    endpoint?: string;
+  }) => Promise<{ answers: Estimate }>;
 };
+// JSON.parse の結果などがプレーンなオブジェクトか
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+// 読み込んだモジュールが必要な export を持つか。関数の引数と戻り値の形までは実行時に確かめられないので、共通クライアントの約束を信じる
+function isJevModule(x: unknown): x is JevModule {
+  return (
+    typeof x === "object" &&
+    x !== null &&
+    "DEFAULT_ENDPOINT" in x &&
+    typeof x.DEFAULT_ENDPOINT === "string" &&
+    "JevError" in x &&
+    typeof x.JevError === "function" &&
+    "getApiKey" in x &&
+    typeof x.getApiKey === "function" &&
+    "callJev" in x &&
+    typeof x.callJev === "function"
+  );
+}
+
 async function loadJev(): Promise<JevModule> {
-  return (await loadJevShared()) as JevModule;
+  const mod: unknown = await loadJevShared();
+  if (!isJevModule(mod)) throw new Error("Jev クライアントに必要な export がありません");
+  return mod;
 }
 
 let catalogCache: FontPair[] | null = null;
@@ -106,8 +134,8 @@ async function readJson(req: http.IncomingMessage): Promise<Record<string, unkno
   } catch {
     throw new HttpError(400, { error: "bad-json" });
   }
-  if (typeof x !== "object" || x === null || Array.isArray(x)) throw new HttpError(400, { error: "bad-json" });
-  return x as Record<string, unknown>;
+  if (!isRecord(x)) throw new HttpError(400, { error: "bad-json" });
+  return x;
 }
 
 function jevEndpoint(jev: JevModule): string {
@@ -115,7 +143,12 @@ function jevEndpoint(jev: JevModule): string {
 }
 
 // 推定に font_pair を足すための候補。skip に font_pair があるか、必要な答えが無ければ空
-function fontCandidates(brief: Brief, est: Estimate, skip: string[], fixed: { heading?: string; body?: string; mono?: string }): FontPair[] {
+function fontCandidates(
+  brief: Brief,
+  est: Estimate,
+  skip: string[],
+  fixed: { heading?: string; body?: string; mono?: string },
+): FontPair[] {
   if (skip.includes("font_pair")) return [];
   const mood = est.font_mood;
   const formality = est.formality;
@@ -123,38 +156,42 @@ function fontCandidates(brief: Brief, est: Estimate, skip: string[], fixed: { he
   return selectCandidates({ catalog: catalog(), fontMood: mood, needsJapanese: brief.needsJapanese, fixed, formality: formality.score });
 }
 
-async function handleEstimate(body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const request: ThemeRequest = validateRequest(body.request);
-  const brief = validateBrief(body.brief);
-  const resolved = resolveExplicit(request, brief);
-  const skip = resolved.skip;
-  const questions = estimateQuestions(skip);
+type EstimateContext = { brief: Brief; skip: string[]; fixedFonts: { heading?: string; body?: string; mono?: string } };
 
-  const jev = await loadJev();
-  let fallbackReason: string;
-  if (jev.getApiKey() !== null) {
-    const endpoint = jevEndpoint(jev);
-    try {
-      const r1 = await jev.callJev({ state: brief.state, questions, model: JEV_MODEL, endpoint });
-      const estimate: Estimate = { ...r1.answers };
-      const candidates = fontCandidates(brief, estimate, skip, resolved.fixed.fonts);
-      if (candidates.length >= 2) {
-        const r2 = await jev.callJev({ state: brief.state, questions: fontQuestion(candidates), model: JEV_MODEL, endpoint });
-        if (r2.answers.font_pair) estimate.font_pair = r2.answers.font_pair;
-      }
-      return { estimate, estimateSource: "jev", skip, fallbackReason: null };
-    } catch (e) {
-      if (!(e instanceof jev.JevError)) throw e;
-      fallbackReason = `jev-failed: ${e.code} ${e.status}`;
+// Jev で推定する。Jev が失敗したとき (JevError) はフォールバックの理由を文字列で返す
+async function estimateByJev(
+  jev: JevModule,
+  ctx: EstimateContext,
+  questions: Record<string, Question>,
+): Promise<Record<string, unknown> | string> {
+  const { brief, skip } = ctx;
+  const endpoint = jevEndpoint(jev);
+  try {
+    const r1 = await jev.callJev({ state: brief.state, questions, model: JEV_MODEL, endpoint });
+    const estimate: Estimate = { ...r1.answers };
+    const candidates = fontCandidates(brief, estimate, skip, ctx.fixedFonts);
+    if (candidates.length >= 2) {
+      const r2 = await jev.callJev({ state: brief.state, questions: fontQuestion(candidates), model: JEV_MODEL, endpoint });
+      if (r2.answers.font_pair) estimate.font_pair = r2.answers.font_pair;
     }
-  } else {
-    fallbackReason = "no-key";
+    return { estimate, estimateSource: "jev", skip, fallbackReason: null };
+  } catch (e) {
+    if (!(e instanceof jev.JevError)) throw e;
+    return `jev-failed: ${e.code} ${e.status}`;
   }
+}
 
+// ローカルの LLM で推定する (Jev が使えないときのフォールバック)
+async function estimateByLlm(
+  ctx: EstimateContext,
+  questions: Record<string, Question>,
+  fallbackReason: string,
+): Promise<Record<string, unknown>> {
+  const { brief, skip } = ctx;
   if (!llmAvailable()) throw new HttpError(503, { error: "estimator-unavailable", questions });
   try {
     const estimate = await estimateWithLlm(brief, questions);
-    const candidates = fontCandidates(brief, estimate, skip, resolved.fixed.fonts);
+    const candidates = fontCandidates(brief, estimate, skip, ctx.fixedFonts);
     if (candidates.length >= 2) {
       const fp = await estimateWithLlm(brief, fontQuestion(candidates));
       if (fp.font_pair) estimate.font_pair = fp.font_pair;
@@ -166,21 +203,129 @@ async function handleEstimate(body: Record<string, unknown>): Promise<Record<str
   }
 }
 
+async function handleEstimate(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const request: ThemeRequest = validateRequest(body.request);
+  const brief = validateBrief(body.brief);
+  const resolved = resolveExplicit(request, brief);
+  const ctx: EstimateContext = { brief, skip: resolved.skip, fixedFonts: resolved.fixed.fonts };
+  const questions = estimateQuestions(ctx.skip);
+
+  const jev = await loadJev();
+  let fallbackReason = "no-key";
+  if (jev.getApiKey() !== null) {
+    const r = await estimateByJev(jev, ctx, questions);
+    if (typeof r !== "string") return r;
+    fallbackReason = r;
+  }
+  return estimateByLlm(ctx, questions, fallbackReason);
+}
+
+// overrides はオブジェクトで、値は文字列か数値だけ受け付ける
+function overridesFrom(ov: unknown): Record<string, string | number> | undefined {
+  if (ov === undefined || ov === null) return undefined;
+  if (!isRecord(ov)) throw new InputError("overrides はオブジェクトで指定してください");
+  const out: Record<string, string | number> = {};
+  for (const [k, v] of Object.entries(ov)) {
+    if (typeof v !== "string" && typeof v !== "number") throw new InputError(`overrides.${k} は文字列か数値で指定してください`);
+    out[k] = v;
+  }
+  return out;
+}
+
 function bundleFrom(body: Record<string, unknown>): Bundle {
   const src = body.estimateSource;
   if (src !== "jev" && src !== "llm-fallback") throw new InputError("estimateSource は jev か llm-fallback で指定してください");
-  const ov = body.overrides;
-  if (ov !== undefined && ov !== null && (typeof ov !== "object" || Array.isArray(ov))) {
-    throw new InputError("overrides はオブジェクトで指定してください");
-  }
+  const overrides = overridesFrom(body.overrides);
   return buildBundle({
     request: body.request,
     brief: body.brief,
     estimate: body.estimate,
     estimateSource: src,
     catalog: catalog(),
-    overrides: (ov ?? undefined) as Record<string, string | number> | undefined,
+    overrides,
   });
+}
+
+function serveIndex(res: http.ServerResponse): void {
+  let html: Buffer;
+  try {
+    html = readFileSync(INDEX_PATH);
+  } catch {
+    sendJson(res, 404, { error: "not-found" });
+    return;
+  }
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Length": html.length, "Cache-Control": "no-store" });
+  res.end(html);
+}
+
+async function serveMeta(res: http.ServerResponse): Promise<void> {
+  const jev = await loadJev();
+  const cat = catalog();
+  sendJson(res, 200, {
+    llm: llmAvailable(),
+    jev: jev.getApiKey() !== null,
+    hues: HUES,
+    questions: ESTIMATE_QUESTIONS,
+    catalog: cat,
+    families: familyNames(cat),
+    storeHome: storeHome(),
+  });
+}
+
+function serveTheme(res: http.ServerResponse, path: string): void {
+  let id: string;
+  try {
+    id = decodeURIComponent(path.slice("/api/themes/".length));
+  } catch {
+    id = "";
+  }
+  const t = readTheme(id);
+  if (!t) sendJson(res, 404, { error: "not-found" });
+  else sendJson(res, 200, t);
+}
+
+async function routeGet(res: http.ServerResponse, path: string): Promise<void> {
+  if (path === "/" || path === "/index.html") serveIndex(res);
+  else if (path === "/api/meta") await serveMeta(res);
+  else if (path === "/api/themes") sendJson(res, 200, listThemes());
+  else if (path.startsWith("/api/themes/")) serveTheme(res, path);
+  else sendJson(res, 404, { error: "not-found" });
+}
+
+async function handleBrief(res: http.ServerResponse, body: Record<string, unknown>): Promise<void> {
+  const request = validateRequest(body.request);
+  if (!llmAvailable()) throw new HttpError(503, { error: "llm-unavailable" });
+  try {
+    sendJson(res, 200, { brief: await generateBrief(request) });
+  } catch (e) {
+    if (e instanceof LlmError) throw new HttpError(502, { error: "llm-failed", message: e.message });
+    throw e;
+  }
+}
+
+// /api/render と /api/save。どちらも本文からバンドルを組み立てる
+function handleBundle(res: http.ServerResponse, path: string, body: Record<string, unknown>): void {
+  const bundle = bundleFrom(body);
+  if (path === "/api/render") {
+    sendJson(res, 200, {
+      seedResult: bundle.seedResult,
+      theme: bundle.theme,
+      previewCss: bundle.previewCss,
+      fontsUrl: bundle.fontsUrl,
+      candidates: bundle.candidates,
+      styleGuideMd: bundle.files["style-guide.md"],
+    });
+    return;
+  }
+  sendJson(res, 201, { dir: writeBundle(bundle) });
+}
+
+async function routePost(req: http.IncomingMessage, res: http.ServerResponse, path: string): Promise<void> {
+  checkPost(req);
+  const body = await readJson(req);
+  if (path === "/api/brief") await handleBrief(res, body);
+  else if (path === "/api/estimate") sendJson(res, 200, await handleEstimate(body));
+  else handleBundle(res, path, body);
 }
 
 async function route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -188,86 +333,13 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse): Promi
   const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
 
   if (method === "GET") {
-    if (path === "/" || path === "/index.html") {
-      let html: Buffer;
-      try {
-        html = readFileSync(INDEX_PATH);
-      } catch {
-        sendJson(res, 404, { error: "not-found" });
-        return;
-      }
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Length": html.length, "Cache-Control": "no-store" });
-      res.end(html);
-      return;
-    }
-    if (path === "/api/meta") {
-      const jev = await loadJev();
-      const cat = catalog();
-      sendJson(res, 200, {
-        llm: llmAvailable(),
-        jev: jev.getApiKey() !== null,
-        hues: HUES,
-        questions: ESTIMATE_QUESTIONS,
-        catalog: cat,
-        families: familyNames(cat),
-        storeHome: storeHome(),
-      });
-      return;
-    }
-    if (path === "/api/themes") {
-      sendJson(res, 200, listThemes());
-      return;
-    }
-    if (path.startsWith("/api/themes/")) {
-      let id: string;
-      try {
-        id = decodeURIComponent(path.slice("/api/themes/".length));
-      } catch {
-        id = "";
-      }
-      const t = readTheme(id);
-      if (!t) sendJson(res, 404, { error: "not-found" });
-      else sendJson(res, 200, t);
-      return;
-    }
-    sendJson(res, 404, { error: "not-found" });
+    await routeGet(res, path);
     return;
   }
-
   if (method === "POST" && ["/api/brief", "/api/estimate", "/api/render", "/api/save"].includes(path)) {
-    checkPost(req);
-    const body = await readJson(req);
-    if (path === "/api/brief") {
-      const request = validateRequest(body.request);
-      if (!llmAvailable()) throw new HttpError(503, { error: "llm-unavailable" });
-      try {
-        sendJson(res, 200, { brief: await generateBrief(request) });
-      } catch (e) {
-        if (e instanceof LlmError) throw new HttpError(502, { error: "llm-failed", message: e.message });
-        throw e;
-      }
-      return;
-    }
-    if (path === "/api/estimate") {
-      sendJson(res, 200, await handleEstimate(body));
-      return;
-    }
-    const bundle = bundleFrom(body);
-    if (path === "/api/render") {
-      sendJson(res, 200, {
-        seedResult: bundle.seedResult,
-        theme: bundle.theme,
-        previewCss: bundle.previewCss,
-        fontsUrl: bundle.fontsUrl,
-        candidates: bundle.candidates,
-        styleGuideMd: bundle.files["style-guide.md"],
-      });
-      return;
-    }
-    sendJson(res, 201, { dir: writeBundle(bundle) });
+    await routePost(req, res, path);
     return;
   }
-
   sendJson(res, 404, { error: "not-found" });
 }
 
@@ -287,7 +359,7 @@ export function createAppServer(): http.Server {
         sendJson(res, 400, { error: "input", message: e.message });
         return;
       }
-      console.error(e instanceof Error ? e.stack ?? e.message : e);
+      console.error(e instanceof Error ? (e.stack ?? e.message) : e);
       sendJson(res, 500, { error: "internal" });
     });
   });

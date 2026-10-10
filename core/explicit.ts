@@ -1,4 +1,5 @@
-import type { BaseMode, Brief, Fixed, Resolved, Source, ThemeRequest } from "./types.ts";
+import type { Brief, Fixed, Resolved, Source, ThemeRequest } from "./types.ts";
+import { isBaseMode, isRecord } from "./guards.ts";
 
 export class InputError extends Error {
   constructor(message: string) {
@@ -32,99 +33,106 @@ export function hexToOklch(hex: string): { l: number; c: number; h: number } {
   return { l: L, c, h };
 }
 
-function isObject(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
+const isHex = (v: unknown): v is string => typeof v === "string" && HEX_RE.test(v);
+const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((m) => typeof m === "string");
+
+function validatePrompt(v: unknown): string {
+  if (typeof v !== "string") throw new InputError("prompt は文字列で指定してください");
+  const prompt = v.trim();
+  if (prompt.length < 1 || prompt.length > 2000) throw new InputError("prompt は trim 後 1〜2000 文字で指定してください");
+  return prompt;
+}
+
+function validateRequestFonts(v: unknown): { heading?: string; body?: string; mono?: string } {
+  if (!isRecord(v)) throw new InputError("fonts はオブジェクトで指定してください");
+  const fonts: { heading?: string; body?: string; mono?: string } = {};
+  for (const k of ["heading", "body", "mono"] as const) {
+    const f = v[k];
+    if (f === undefined) continue;
+    if (typeof f !== "string") throw new InputError(`fonts.${k} は文字列で指定してください`);
+    fonts[k] = f;
+  }
+  return fonts;
 }
 
 export function validateRequest(x: unknown): ThemeRequest {
-  if (!isObject(x)) throw new InputError("リクエストはオブジェクトで指定してください");
-  if (typeof x.prompt !== "string") throw new InputError("prompt は文字列で指定してください");
-  const prompt = x.prompt.trim();
-  if (prompt.length < 1 || prompt.length > 2000) throw new InputError("prompt は trim 後 1〜2000 文字で指定してください");
-  const out: ThemeRequest = { prompt };
+  if (!isRecord(x)) throw new InputError("リクエストはオブジェクトで指定してください");
+  const out: ThemeRequest = { prompt: validatePrompt(x.prompt) };
   if (x.brandColor !== undefined) {
-    if (typeof x.brandColor !== "string" || !HEX_RE.test(x.brandColor)) throw new InputError("brandColor は #RRGGBB 形式で指定してください");
+    if (!isHex(x.brandColor)) throw new InputError("brandColor は #RRGGBB 形式で指定してください");
     out.brandColor = x.brandColor;
   }
   if (x.baseMode !== undefined) {
-    if (x.baseMode !== "light" && x.baseMode !== "dark") throw new InputError("baseMode は light か dark で指定してください");
+    if (!isBaseMode(x.baseMode)) throw new InputError("baseMode は light か dark で指定してください");
     out.baseMode = x.baseMode;
   }
-  if (x.fonts !== undefined) {
-    if (!isObject(x.fonts)) throw new InputError("fonts はオブジェクトで指定してください");
-    const fonts: { heading?: string; body?: string; mono?: string } = {};
-    for (const k of ["heading", "body", "mono"] as const) {
-      const v = x.fonts[k];
-      if (v === undefined) continue;
-      if (typeof v !== "string") throw new InputError(`fonts.${k} は文字列で指定してください`);
-      fonts[k] = v;
-    }
-    out.fonts = fonts;
-  }
+  if (x.fonts !== undefined) out.fonts = validateRequestFonts(x.fonts);
   return out;
 }
 
+function validateBriefState(s: unknown): Brief["state"] {
+  if (!isRecord(s)) throw new InputError("brief.state はオブジェクトで指定してください");
+  const str = (k: "product" | "audience" | "references" | "avoid"): string => {
+    const v = s[k];
+    if (typeof v !== "string") throw new InputError(`brief.state.${k} は文字列で指定してください`);
+    return v;
+  };
+  const product = str("product");
+  const audience = str("audience");
+  const references = str("references");
+  const avoid = str("avoid");
+  const mood = s.mood;
+  if (!isStringArray(mood) || mood.length < 1 || mood.length > 6) {
+    throw new InputError("brief.state.mood は 1〜6 個の文字列の配列で指定してください");
+  }
+  return { product, audience, mood, references, avoid };
+}
+
+function validateBriefExplicit(e: unknown): Brief["explicit"] {
+  if (!isRecord(e)) throw new InputError("brief.explicit はオブジェクトで指定してください");
+  const { brandColor, baseMode } = e;
+  if (brandColor !== null && !isHex(brandColor)) {
+    throw new InputError("brief.explicit.brandColor は null か #RRGGBB 形式で指定してください");
+  }
+  if (baseMode !== null && !isBaseMode(baseMode)) {
+    throw new InputError("brief.explicit.baseMode は null か light/dark で指定してください");
+  }
+  return { brandColor, baseMode };
+}
+
+const isBriefId = (v: unknown): v is string => typeof v === "string" && ID_RE.test(v) && v.length <= 20;
+
 export function validateBrief(x: unknown): Brief {
-  if (!isObject(x)) throw new InputError("brief はオブジェクトで指定してください");
-  if (typeof x.id !== "string" || !ID_RE.test(x.id) || x.id.length > 20) throw new InputError("brief.id は /^[a-z][a-z0-9-]*$/ に合う 20 文字以内の文字列で指定してください");
+  if (!isRecord(x)) throw new InputError("brief はオブジェクトで指定してください");
+  if (!isBriefId(x.id)) throw new InputError("brief.id は /^[a-z][a-z0-9-]*$/ に合う 20 文字以内の文字列で指定してください");
   if (typeof x.name !== "string") throw new InputError("brief.name は文字列で指定してください");
   if (typeof x.tone !== "string") throw new InputError("brief.tone は文字列で指定してください");
   if (typeof x.needsJapanese !== "boolean") throw new InputError("brief.needsJapanese は真偽値で指定してください");
-  const s = x.state;
-  if (!isObject(s)) throw new InputError("brief.state はオブジェクトで指定してください");
-  for (const k of ["product", "audience", "references", "avoid"] as const) {
-    if (typeof s[k] !== "string") throw new InputError(`brief.state.${k} は文字列で指定してください`);
-  }
-  if (!Array.isArray(s.mood) || s.mood.length < 1 || s.mood.length > 6 || !s.mood.every((m) => typeof m === "string")) {
-    throw new InputError("brief.state.mood は 1〜6 個の文字列の配列で指定してください");
-  }
-  const e = x.explicit;
-  if (!isObject(e)) throw new InputError("brief.explicit はオブジェクトで指定してください");
-  if (e.brandColor !== null && (typeof e.brandColor !== "string" || !HEX_RE.test(e.brandColor))) {
-    throw new InputError("brief.explicit.brandColor は null か #RRGGBB 形式で指定してください");
-  }
-  if (e.baseMode !== null && e.baseMode !== "light" && e.baseMode !== "dark") {
-    throw new InputError("brief.explicit.baseMode は null か light/dark で指定してください");
-  }
-  return {
-    id: x.id,
-    name: x.name,
-    tone: x.tone,
-    needsJapanese: x.needsJapanese,
-    state: { product: s.product as string, audience: s.audience as string, mood: s.mood as string[], references: s.references as string, avoid: s.avoid as string },
-    explicit: { brandColor: e.brandColor as string | null, baseMode: e.baseMode as BaseMode | null },
-  };
+  const state = validateBriefState(x.state);
+  const explicit = validateBriefExplicit(x.explicit);
+  return { id: x.id, name: x.name, tone: x.tone, needsJapanese: x.needsJapanese, state, explicit };
 }
 
-export function resolveExplicit(request: ThemeRequest, brief: Brief | null): Resolved {
-  const fixed: Fixed = { fonts: {} };
-  const sources: Record<string, Source> = {};
-  const skipSet = new Set<string>();
-
-  const color = request.brandColor ?? brief?.explicit.brandColor ?? null;
-  if (color) {
-    const { c, h } = hexToOklch(color);
-    if (c >= 0.02) {
-      fixed.brandHue = Math.round(h * 10) / 10;
-      fixed.brandChroma = Math.round(Math.min(0.25, Math.max(0.02, c)) * 1000) / 1000;
-      skipSet.add("brand_hue");
-      skipSet.add("chroma");
-      sources["color.brandHue"] = "explicit";
-      sources["color.brandChroma"] = "explicit";
-    } else {
-      fixed.brandChroma = 0.04;
-      skipSet.add("chroma");
-      sources["color.brandChroma"] = "explicit";
-    }
+/** ブランド色を確定する。彩度が低い色は色相を決めず、彩度だけ固定する */
+function resolveColor(color: string | null, fixed: Fixed, skipSet: Set<string>, sources: Record<string, Source>): void {
+  if (!color) return;
+  const { c, h } = hexToOklch(color);
+  if (c >= 0.02) {
+    fixed.brandHue = Math.round(h * 10) / 10;
+    fixed.brandChroma = Math.round(Math.min(0.25, Math.max(0.02, c)) * 1000) / 1000;
+    skipSet.add("brand_hue");
+    skipSet.add("chroma");
+    sources["color.brandHue"] = "explicit";
+    sources["color.brandChroma"] = "explicit";
+  } else {
+    fixed.brandChroma = 0.04;
+    skipSet.add("chroma");
+    sources["color.brandChroma"] = "explicit";
   }
+}
 
-  const baseMode = request.baseMode ?? brief?.explicit.baseMode ?? null;
-  if (baseMode) {
-    fixed.baseMode = baseMode;
-    skipSet.add("base_mode");
-    sources["baseMode"] = "explicit";
-  }
-
+/** 指定されたフォントを固定する。3 つとも揃えば font_pair の質問を省く */
+function resolveFonts(request: ThemeRequest, fixed: Fixed, skipSet: Set<string>, sources: Record<string, Source>): void {
   const rf = request.fonts ?? {};
   for (const k of ["heading", "body", "mono"] as const) {
     const v = rf[k];
@@ -134,6 +142,23 @@ export function resolveExplicit(request: ThemeRequest, brief: Brief | null): Res
     }
   }
   if (fixed.fonts.heading && fixed.fonts.body && fixed.fonts.mono) skipSet.add("font_pair");
+}
+
+export function resolveExplicit(request: ThemeRequest, brief: Brief | null): Resolved {
+  const fixed: Fixed = { fonts: {} };
+  const sources: Record<string, Source> = {};
+  const skipSet = new Set<string>();
+
+  resolveColor(request.brandColor ?? brief?.explicit.brandColor ?? null, fixed, skipSet, sources);
+
+  const baseMode = request.baseMode ?? brief?.explicit.baseMode ?? null;
+  if (baseMode) {
+    fixed.baseMode = baseMode;
+    skipSet.add("base_mode");
+    sources["baseMode"] = "explicit";
+  }
+
+  resolveFonts(request, fixed, skipSet, sources);
 
   const skip = ["brand_hue", "chroma", "base_mode", "font_pair"].filter((k) => skipSet.has(k));
   return { fixed, skip, sources };

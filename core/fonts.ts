@@ -3,49 +3,64 @@ import { fileURLToPath } from "node:url";
 import type { ChoiceAnswer, FontPair, Question } from "./types.ts";
 import { THRESHOLDS } from "./questions.ts";
 import { InputError } from "./explicit.ts";
+import { at, isFontMood, isRecord } from "./guards.ts";
 
 export const CATALOG_PATH: string = fileURLToPath(new URL("../data/fonts.json", import.meta.url));
 
-const MOODS = ["geometric", "humanist", "rounded", "serif", "mincho", "tech"];
 const ID_RE = /^[a-z0-9-]+\+[a-z0-9-]+$/;
 
-function validWeights(w: unknown): boolean {
-  return (
-    Array.isArray(w) &&
-    w.length >= 1 &&
-    w.every((n) => Number.isInteger(n) && n >= 100 && n <= 900)
-  );
+function validWeights(w: unknown): w is number[] {
+  return Array.isArray(w) && w.length >= 1 && w.every((n) => Number.isInteger(n) && n >= 100 && n <= 900);
+}
+
+function checkId(p: Record<string, unknown>, label: string, seen: Set<string>, errors: string[]): void {
+  if (typeof p.id !== "string" || !ID_RE.test(p.id)) errors.push(`${label} id が不正です: ${String(p.id)}`);
+  else if (seen.has(p.id)) errors.push(`${label} id が重複しています: ${p.id}`);
+  else seen.add(p.id);
+}
+
+function checkAttributes(p: Record<string, unknown>, label: string, errors: string[]): void {
+  for (const k of ["heading", "body", "mono", "description"]) {
+    if (typeof p[k] !== "string" || p[k] === "") errors.push(`${label} ${k} が不正です`);
+  }
+  if (!isFontMood(p.mood)) errors.push(`${label} mood が不正です: ${String(p.mood)}`);
+  if (typeof p.japanese !== "boolean") errors.push(`${label} japanese が真偽値ではありません`);
+  if (typeof p.formality !== "number" || !(p.formality >= 0 && p.formality <= 4))
+    errors.push(`${label} formality が 0〜4 の数ではありません`);
+}
+
+function checkWeights(w: unknown, label: string, errors: string[]): void {
+  if (!w || typeof w !== "object") {
+    errors.push(`${label} weights がありません`);
+    return;
+  }
+  if (!validWeights("heading" in w ? w.heading : undefined)) errors.push(`${label} weights.heading が不正です`);
+  if (!validWeights("body" in w ? w.body : undefined)) errors.push(`${label} weights.body が不正です`);
+}
+
+/** 1 件を検査して問題を errors に足す。この件に問題が無ければ FontPair とみなせる */
+function checkPair(raw: unknown, label: string, seen: Set<string>, errors: string[]): raw is FontPair {
+  if (!isRecord(raw)) {
+    errors.push(`${label} はオブジェクトではありません`);
+    return false;
+  }
+  const before = errors.length;
+  checkId(raw, label, seen, errors);
+  checkAttributes(raw, label, errors);
+  checkWeights(raw.weights, label, errors);
+  return errors.length === before;
 }
 
 export function validateCatalog(x: unknown): FontPair[] {
   if (!Array.isArray(x)) throw new InputError("フォントカタログは配列である必要があります");
   const errors: string[] = [];
   const seen = new Set<string>();
-  x.forEach((raw, i) => {
-    const p = raw as Record<string, any> | null;
-    const label = `[${i}]`;
-    if (p === null || typeof p !== "object" || Array.isArray(p)) {
-      errors.push(`${label} はオブジェクトではありません`);
-      return;
-    }
-    if (typeof p.id !== "string" || !ID_RE.test(p.id)) errors.push(`${label} id が不正です: ${String(p.id)}`);
-    else if (seen.has(p.id)) errors.push(`${label} id が重複しています: ${p.id}`);
-    else seen.add(p.id);
-    for (const k of ["heading", "body", "mono", "description"]) {
-      if (typeof p[k] !== "string" || p[k] === "") errors.push(`${label} ${k} が不正です`);
-    }
-    if (!MOODS.includes(p.mood)) errors.push(`${label} mood が不正です: ${String(p.mood)}`);
-    if (typeof p.japanese !== "boolean") errors.push(`${label} japanese が真偽値ではありません`);
-    if (typeof p.formality !== "number" || !(p.formality >= 0 && p.formality <= 4))
-      errors.push(`${label} formality が 0〜4 の数ではありません`);
-    if (!p.weights || typeof p.weights !== "object") errors.push(`${label} weights がありません`);
-    else {
-      if (!validWeights(p.weights.heading)) errors.push(`${label} weights.heading が不正です`);
-      if (!validWeights(p.weights.body)) errors.push(`${label} weights.body が不正です`);
-    }
+  const pairs: FontPair[] = [];
+  x.forEach((raw: unknown, i) => {
+    if (checkPair(raw, `[${i}]`, seen, errors)) pairs.push(raw);
   });
   if (errors.length > 0) throw new InputError(`フォントカタログが不正です:\n${errors.join("\n")}`);
-  return x as FontPair[];
+  return pairs;
 }
 
 export function loadCatalog(path: string = CATALOG_PATH): FontPair[] {
@@ -57,10 +72,7 @@ export function familyNames(catalog: FontPair[]): { heading: string[]; body: str
   return { heading: uniq((p) => p.heading), body: uniq((p) => p.body), mono: uniq((p) => p.mono) };
 }
 
-export function validateFixedFonts(
-  fonts: { heading?: string; body?: string; mono?: string },
-  catalog: FontPair[],
-): string[] {
+export function validateFixedFonts(fonts: { heading?: string; body?: string; mono?: string }, catalog: FontPair[]): string[] {
   const out: string[] = [];
   for (const role of ["heading", "body", "mono"] as const) {
     const name = fonts[role];
@@ -109,15 +121,12 @@ export function fontQuestion(candidates: FontPair[]): Record<string, Question> {
 }
 
 export function pickFontPair(candidates: FontPair[], answer?: ChoiceAnswer): FontPair | null {
-  if (candidates.length === 1) return candidates[0];
+  if (candidates.length === 1) return at(candidates, 0);
   if (answer) return candidates.find((p) => p.id === answer.choice) ?? null;
   return null;
 }
 
-export function googleFontsUrl(
-  fonts: { heading: string; body: string; mono: string },
-  pair?: FontPair | null,
-): string {
+export function googleFontsUrl(fonts: { heading: string; body: string; mono: string }, pair?: FontPair | null): string {
   const families = new Map<string, Set<number>>();
   const add = (name: string, ws: number[]) => {
     const s = families.get(name) ?? new Set<number>();
@@ -127,8 +136,6 @@ export function googleFontsUrl(
   add(fonts.heading, pair?.weights.heading ?? [400, 700]);
   add(fonts.body, pair?.weights.body ?? [400, 700]);
   add(fonts.mono, [400]);
-  const parts = [...families].map(
-    ([name, ws]) => `family=${name.replace(/ /g, "+")}:wght@${[...ws].sort((a, b) => a - b).join(";")}`,
-  );
+  const parts = [...families].map(([name, ws]) => `family=${name.replace(/ /g, "+")}:wght@${[...ws].sort((a, b) => a - b).join(";")}`);
   return `https://fonts.googleapis.com/css2?${parts.join("&")}&display=swap`;
 }

@@ -41,6 +41,43 @@ export type Bundle = {
 
 const json = (x: unknown): string => JSON.stringify(x, null, 2) + "\n";
 
+/** 推定の font_pair (あれば) か候補から、フォントの組を 1 つに決める */
+function chooseFontPair(catalog: FontPair[], candidates: FontPair[], estimate: Estimate): FontPair {
+  const fp = estimate.font_pair;
+  let fontPair: FontPair | null;
+  if (fp) {
+    if (fp.type !== "choice") throw new InputError("font_pair は choice である必要があります");
+    fontPair = catalog.find((p) => p.id === fp.choice) ?? null;
+    if (!fontPair) throw new InputError(`font_pair "${fp.choice}" はカタログにありません`);
+  } else {
+    fontPair = pickFontPair(candidates);
+  }
+  if (!fontPair) throw new InputError(`font_pair が必要です (候補 ${candidates.length} 件)`);
+  return fontPair;
+}
+
+/** フォントの候補を選び、組を決める。3 つとも明示指定なら選ばない */
+function resolveFontPair(
+  catalog: FontPair[],
+  brief: Brief,
+  resolved: Resolved,
+  estimate: Estimate,
+): { candidates: FontPair[]; fontPair: FontPair | null } {
+  if (resolved.skip.includes("font_pair")) return { candidates: [], fontPair: null };
+  const mood = estimate.font_mood;
+  const formality = estimate.formality;
+  if (!mood || mood.type !== "choice") throw new InputError("font_mood が必要です");
+  if (!formality || formality.type !== "score") throw new InputError("formality が必要です");
+  const candidates = selectCandidates({
+    catalog,
+    fontMood: mood,
+    needsJapanese: brief.needsJapanese,
+    fixed: resolved.fixed.fonts,
+    formality: formality.score,
+  });
+  return { candidates, fontPair: chooseFontPair(catalog, candidates, estimate) };
+}
+
 export function buildBundle(input: BundleInput): Bundle {
   const { catalog, estimateSource } = input;
 
@@ -58,30 +95,7 @@ export function buildBundle(input: BundleInput): Bundle {
   if (input.overrides) estimate = applyOverrides(estimate, input.overrides);
 
   // 4. フォントの組
-  let candidates: FontPair[] = [];
-  let fontPair: FontPair | null = null;
-  if (!resolved.skip.includes("font_pair")) {
-    const mood = estimate.font_mood;
-    const formality = estimate.formality;
-    if (!mood || mood.type !== "choice") throw new InputError("font_mood が必要です");
-    if (!formality || formality.type !== "score") throw new InputError("formality が必要です");
-    candidates = selectCandidates({
-      catalog,
-      fontMood: mood,
-      needsJapanese: brief.needsJapanese,
-      fixed: resolved.fixed.fonts,
-      formality: formality.score,
-    });
-    const fp = estimate.font_pair;
-    if (fp) {
-      if (fp.type !== "choice") throw new InputError("font_pair は choice である必要があります");
-      fontPair = catalog.find((p) => p.id === fp.choice) ?? null;
-      if (!fontPair) throw new InputError(`font_pair "${fp.choice}" はカタログにありません`);
-    } else {
-      fontPair = pickFontPair(candidates);
-    }
-    if (!fontPair) throw new InputError(`font_pair が必要です (候補 ${candidates.length} 件)`);
-  }
+  const { candidates, fontPair } = resolveFontPair(catalog, brief, resolved, estimate);
 
   // 5. シード
   const seedResult = toSeedResult({ brief, resolved, estimate, fontPair, estimateSource });
@@ -118,6 +132,29 @@ export function writeBundle(bundle: Bundle, dir?: string): string {
   return out;
 }
 
+type ThemeEntry = { id: string; name: string; tone: string; updated: string; ms: number };
+
+/** themes/<id>/seed.json から一覧の 1 行を作る。壊れた seed.json や無いものは null */
+function readThemeEntry(root: string, id: string): ThemeEntry | null {
+  const file = join(root, id, "seed.json");
+  try {
+    const seed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!seed || typeof seed !== "object") return null;
+    const name = "name" in seed ? seed.name : undefined;
+    const tone = "tone" in seed ? seed.tone : undefined;
+    const st = statSync(file);
+    return {
+      id,
+      name: typeof name === "string" ? name : id,
+      tone: typeof tone === "string" ? tone : "",
+      updated: st.mtime.toISOString(),
+      ms: st.mtimeMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function listThemes(): { id: string; name: string; tone: string; updated: string }[] {
   const root = join(storeHome(), "themes");
   let names: string[];
@@ -126,24 +163,11 @@ export function listThemes(): { id: string; name: string; tone: string; updated:
   } catch {
     return [];
   }
-  const out: { id: string; name: string; tone: string; updated: string; ms: number }[] = [];
+  const out: ThemeEntry[] = [];
   for (const id of names) {
     if (!ID_RE.test(id)) continue;
-    const file = join(root, id, "seed.json");
-    try {
-      const seed = JSON.parse(readFileSync(file, "utf8"));
-      if (!seed || typeof seed !== "object") continue;
-      const st = statSync(file);
-      out.push({
-        id,
-        name: typeof seed.name === "string" ? seed.name : id,
-        tone: typeof seed.tone === "string" ? seed.tone : "",
-        updated: st.mtime.toISOString(),
-        ms: st.mtimeMs,
-      });
-    } catch {
-      continue; // 壊れた seed.json や無いものは読み飛ばす
-    }
+    const entry = readThemeEntry(root, id);
+    if (entry) out.push(entry);
   }
   out.sort((a, b) => b.ms - a.ms || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return out.map(({ id, name, tone, updated }) => ({ id, name, tone, updated }));

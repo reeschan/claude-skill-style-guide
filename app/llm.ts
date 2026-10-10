@@ -1,9 +1,10 @@
 // Web アプリ用の LLM 呼び出し。ローカルの Claude Code CLI (`claude -p`) の構造化出力を使う
 import { spawn, spawnSync } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
-import type { Answer, Brief, Estimate, Question, ThemeRequest } from "../core/types.ts";
+import type { Answer, Brief, ChoiceAnswer, Estimate, Question, ThemeRequest } from "../core/types.ts";
 import { InputError, validateBrief } from "../core/explicit.ts";
 
 export class LlmError extends Error {
@@ -13,12 +14,22 @@ export class LlmError extends Error {
   }
 }
 
-export function llmCommand(): string[] {
+// JSON.parse の結果などがプレーンなオブジェクトか
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+// 先頭 (コマンド) が必ずある文字列の配列か
+function isCommand(x: unknown): x is [string, ...string[]] {
+  return Array.isArray(x) && x.length > 0 && x.every((s) => typeof s === "string");
+}
+
+export function llmCommand(): [string, ...string[]] {
   const raw = process.env.STYLE_GUIDE_LLM_CMD;
   if (raw) {
     try {
-      const v = JSON.parse(raw);
-      if (Array.isArray(v) && v.length > 0 && v.every((s) => typeof s === "string")) return v;
+      const v: unknown = JSON.parse(raw);
+      if (isCommand(v)) return v;
     } catch {
       // 不正な値は無視して既定に戻す
     }
@@ -44,67 +55,84 @@ export function llmAvailable(): boolean {
   return availableCache;
 }
 
-export async function runStructured(
-  prompt: string,
-  schema: object,
-  opts: { model?: string; timeoutMs?: number } = {},
-): Promise<unknown> {
+type ChildResult = { stdout: string; stderr: string; code: number | null };
+
+function structuredArgs(rest: string[], model: string, schema: object): string[] {
+  return [
+    ...rest,
+    "-p",
+    "--setting-sources",
+    "project",
+    "--no-session-persistence",
+    "--output-format",
+    "json",
+    "--model",
+    model,
+    "--tools",
+    "",
+    "--json-schema",
+    JSON.stringify(schema),
+  ];
+}
+
+// 子プロセスを起動し、標準入力に prompt を渡して、終了まで (またはタイムアウトまで) 待つ
+function runChild(cmd: string, args: string[], cwd: string, prompt: string, timeoutMs: number): Promise<ChildResult> {
+  return new Promise<ChildResult>((resolve, reject) => {
+    const child: ChildProcessWithoutNullStreams = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      child.kill();
+      reject(new LlmError(`LLM がタイムアウトしました (${timeoutMs}ms)`));
+    }, timeoutMs);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d: string) => (out += d));
+    child.stderr.on("data", (d: string) => (err += d));
+    child.on("error", (e) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      reject(new LlmError(`LLM を起動できません: ${e.message}`));
+    });
+    child.on("close", (c) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ stdout: out, stderr: err, code: c });
+    });
+    child.stdin.on("error", () => {});
+    child.stdin.end(prompt, "utf8");
+  });
+}
+
+// CLI の出力 (JSON) から structured_output を取り出す。読めない・エラーなら LlmError
+function structuredOutput({ stdout, stderr, code }: ChildResult): unknown {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new LlmError(`LLM の出力を JSON として読めません (終了コード ${code}): ${(stderr || stdout).slice(0, 300)}`);
+  }
+  if (!isRecord(parsed) || parsed.is_error === true || parsed.structured_output === undefined || parsed.structured_output === null) {
+    const result = isRecord(parsed) ? parsed.result : undefined;
+    const detail = typeof result === "string" && result ? result : stderr;
+    throw new LlmError(`LLM がエラーを返しました: ${detail.slice(0, 300)}`);
+  }
+  return parsed.structured_output;
+}
+
+export async function runStructured(prompt: string, schema: object, opts: { model?: string; timeoutMs?: number } = {}): Promise<unknown> {
   const model = opts.model || process.env.STYLE_GUIDE_LLM_MODEL || "sonnet";
   const timeoutMs = opts.timeoutMs ?? 180000;
   const [cmd, ...rest] = llmCommand();
-  const args = [
-    ...rest,
-    "-p",
-    "--setting-sources", "project",
-    "--no-session-persistence",
-    "--output-format", "json",
-    "--model", model,
-    "--tools", "",
-    "--json-schema", JSON.stringify(schema),
-  ];
+  const args = structuredArgs(rest, model, schema);
   const cwd = fs.mkdtempSync(join(os.tmpdir(), "sg-llm-"));
   try {
-    const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
-      const child = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
-      let out = "";
-      let err = "";
-      let done = false;
-      const timer = setTimeout(() => {
-        if (done) return;
-        done = true;
-        child.kill();
-        reject(new LlmError(`LLM がタイムアウトしました (${timeoutMs}ms)`));
-      }, timeoutMs);
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (d) => (out += d));
-      child.stderr.on("data", (d) => (err += d));
-      child.on("error", (e) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        reject(new LlmError(`LLM を起動できません: ${e.message}`));
-      });
-      child.on("close", (c) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        resolve({ stdout: out, stderr: err, code: c });
-      });
-      child.stdin.on("error", () => {});
-      child.stdin.end(prompt, "utf8");
-    });
-    let parsed: any;
-    try {
-      parsed = JSON.parse(stdout);
-    } catch {
-      throw new LlmError(`LLM の出力を JSON として読めません (終了コード ${code}): ${(stderr || stdout).slice(0, 300)}`);
-    }
-    if (!parsed || typeof parsed !== "object" || parsed.is_error === true || parsed.structured_output === undefined || parsed.structured_output === null) {
-      const detail = typeof parsed?.result === "string" && parsed.result ? parsed.result : stderr;
-      throw new LlmError(`LLM がエラーを返しました: ${String(detail).slice(0, 300)}`);
-    }
-    return parsed.structured_output;
+    return structuredOutput(await runChild(cmd, args, cwd, prompt, timeoutMs));
   } finally {
     try {
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -203,45 +231,61 @@ function questionSchema(q: Question): object {
   };
 }
 
+// probabilities のうち数値の値だけを残す。オブジェクトでない・数値が 1 つも無ければ null
+function numberRecord(x: unknown): Record<string, number> | null {
+  if (!isRecord(x)) return null;
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(x)) {
+    if (typeof v === "number") out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function toChoiceAnswer(k: string, a: Record<string, unknown>, criteria: Record<string, string>): ChoiceAnswer {
+  const choice = a.choice;
+  if (typeof choice !== "string" || !(choice in criteria)) throw new LlmError(`${k}: choice が不正です`);
+  const confidence = Number(a.confidence);
+  const probabilities = numberRecord(a.probabilities) ?? { [choice]: confidence };
+  return { type: "choice", choice, confidence, probabilities };
+}
+
+// LLM の 1 問分の答えを、質問の type に合わせた Answer にする
+function toAnswer(k: string, a: unknown, q: Question): Answer {
+  if (!isRecord(a)) throw new LlmError(`LLM の推定結果に ${k} がありません`);
+  if (q.type === "choice") return toChoiceAnswer(k, a, q.criteria);
+  if (q.type === "noul") {
+    if (typeof a.noul !== "number") throw new LlmError(`${k}: noul が不正です`);
+    return { type: "noul", noul: a.noul };
+  }
+  if (typeof a.score !== "number") throw new LlmError(`${k}: score が不正です`);
+  return { type: "score", score: a.score, confidence: Number(a.confidence) };
+}
+
 export async function estimateWithLlm(brief: Brief, questions: Record<string, Question>): Promise<Estimate> {
-  const keys = Object.keys(questions);
-  const qs = keys.map((k) => ({
+  const entries = Object.entries(questions);
+  const keys = entries.map(([k]) => k);
+  const qs = entries.map(([k, q]) => ({
     key: k,
-    type: questions[k].type,
-    instructions: questions[k].instructions,
-    criteria: questions[k].criteria,
+    type: q.type,
+    instructions: q.instructions,
+    criteria: q.criteria,
   }));
-  const prompt = `${ESTIMATE_INSTRUCTIONS}\n\nstate:\n${JSON.stringify(brief.state, null, 2)}\n\nquestions:\n${JSON.stringify(qs, null, 2)}\n`;
+  const prompt = `${ESTIMATE_INSTRUCTIONS}
+
+state:
+${JSON.stringify(brief.state, null, 2)}
+
+questions:
+${JSON.stringify(qs, null, 2)}
+`;
   const schema = {
     type: "object",
     required: keys,
-    properties: Object.fromEntries(keys.map((k) => [k, questionSchema(questions[k])])),
+    properties: Object.fromEntries(entries.map(([k, q]) => [k, questionSchema(q)])),
   };
   const out = await runStructured(prompt, schema);
-  if (!out || typeof out !== "object" || Array.isArray(out)) throw new LlmError("LLM の推定結果がオブジェクトではありません");
-  const raw = out as Record<string, any>;
+  if (!isRecord(out)) throw new LlmError("LLM の推定結果がオブジェクトではありません");
   const est: Estimate = {};
-  for (const k of keys) {
-    const a = raw[k];
-    const q = questions[k];
-    if (!a || typeof a !== "object") throw new LlmError(`LLM の推定結果に ${k} がありません`);
-    let ans: Answer;
-    if (q.type === "choice") {
-      if (typeof a.choice !== "string" || !(a.choice in q.criteria)) throw new LlmError(`${k}: choice が不正です`);
-      const confidence = Number(a.confidence);
-      const probabilities =
-        a.probabilities && typeof a.probabilities === "object" && Object.keys(a.probabilities).length > 0
-          ? (a.probabilities as Record<string, number>)
-          : { [a.choice]: confidence };
-      ans = { type: "choice", choice: a.choice, confidence, probabilities };
-    } else if (q.type === "noul") {
-      if (typeof a.noul !== "number") throw new LlmError(`${k}: noul が不正です`);
-      ans = { type: "noul", noul: a.noul };
-    } else {
-      if (typeof a.score !== "number") throw new LlmError(`${k}: score が不正です`);
-      ans = { type: "score", score: a.score, confidence: Number(a.confidence) };
-    }
-    est[k] = ans;
-  }
+  for (const [k, q] of entries) est[k] = toAnswer(k, out[k], q);
   return est;
 }
