@@ -1,5 +1,7 @@
 # claude-skill-style-guide
 
+[![test](https://github.com/reeschan/claude-skill-style-guide/actions/workflows/test.yml/badge.svg)](https://github.com/reeschan/claude-skill-style-guide/actions/workflows/test.yml)
+
 A Claude Code skill that turns a free-form description (e.g. "a calm, Japanese-style invoicing SaaS") into a UI theme: colors, radius, spacing, shadows and fonts.
 It outputs a Tailwind v4 `theme.css`, a `theme.json` and a style guide document.
 Estimation can be done by Jev (TypeSafe) or by Claude itself; everything after that is deterministic.
