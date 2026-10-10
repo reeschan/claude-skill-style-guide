@@ -27,4 +27,4 @@ Claude Code スキル `style-guide` の本体。利用者は clone するだけ�
 - 実行時の依存 (dependencies) を足さない。外部入力の検証は `core/explicit.ts` のように手で書く
 - import には拡張子 `.ts` を付け、型だけの import は `import type` にする。`enum` / `namespace` / 引数プロパティは書かない (型ストリッピングで動かないため。tsconfig の `erasableSyntaxOnly` で止まる)
 - ルールを緩めて検査を通さない。lint の無効化コメント (`eslint-disable`) や `@ts-ignore` は書かない
-- ブランチは `develop` に PR を出す。`main` はルールセットで守られ、`develop` → `main` の PR (`ci-ok` 必須) でだけ更新する
+- ブランチは `develop` に PR を出す。`main` はルールセットで守られ、`develop` → `main` の PR (`ci-ok` 必須、Squash and merge のみ) でだけ更新する。squash 後は `main` を `develop` にマージして揃える
