@@ -13,8 +13,9 @@ export function jevModulePath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "jev.mjs");
 }
 
-let cached: Promise<any> | null = null;
-export async function loadJev(): Promise<any> {
+// 読み込んだモジュールの形は呼び出し側で確かめる
+let cached: Promise<unknown> | null = null;
+export async function loadJev(): Promise<unknown> {
   if (!cached) cached = import(pathToFileURL(jevModulePath()).href);
   return cached;
 }

@@ -4,6 +4,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Seed } from "./types.ts";
+import { at, get, isBaseMode, isFontMood, isRecord, isShadowKind } from "./guards.ts";
 
 // ---------------------------------------------------------------------------
 // OKLCH ユーティリティ
@@ -40,13 +41,18 @@ function fit(col: Color): Color {
   return { l, c: lo, h: col.h };
 }
 
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+
 function luminance(col: Color): number {
-  const [r, g, b] = toLinearRgb(col).map((v) => Math.min(1, Math.max(0, v)));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const [r, g, b] = toLinearRgb(col);
+  return 0.2126 * clamp01(r) + 0.7152 * clamp01(g) + 0.0722 * clamp01(b);
 }
 
 export function contrastRatio(a: Color, b: Color): number {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  const la = luminance(a);
+  const lb = luminance(b);
+  const hi = Math.max(la, lb);
+  const lo = Math.min(la, lb);
   return (hi + 0.05) / (lo + 0.05);
 }
 
@@ -61,36 +67,70 @@ type Tokens = Record<string, Color>;
 /** 明度0.6付近で彩度が最大になり、明暗の両端で落ちるカーブ */
 const chromaFactor = (l: number) => Math.max(0.2, 1 - ((l - 0.6) / 0.5) ** 2);
 
+/** モードごとの明度。fg は contrast 1〜5 に対応する文字色の明度 */
+const LIGHTNESS = {
+  light: {
+    fg: [0.32, 0.28, 0.24, 0.2, 0.16],
+    mutedFgOffset: 0.28,
+    background: 0.985,
+    card: 1,
+    muted: 0.955,
+    border: 0.9,
+    secondary: 0.94,
+    primary: 0.55,
+    accent: 0.95,
+    accentFg: 0.35,
+    brandAccent: 0.6,
+    destructive: 0.55,
+    success: 0.5,
+  },
+  dark: {
+    fg: [0.88, 0.91, 0.94, 0.96, 0.98],
+    mutedFgOffset: -0.28,
+    background: 0.16,
+    card: 0.2,
+    muted: 0.25,
+    border: 0.3,
+    secondary: 0.27,
+    primary: 0.7,
+    accent: 0.28,
+    accentFg: 0.85,
+    brandAccent: 0.72,
+    destructive: 0.62,
+    success: 0.65,
+  },
+};
+
 function buildTokens(seed: Seed, mode: Mode): Tokens {
   const { brandHue, brandChroma, accentHue, neutralHue, neutralChroma, contrast } = seed.color;
   const n = (l: number) => fit({ l, c: neutralChroma, h: neutralHue });
   const hue = (h: number, l: number, c = brandChroma) => fit({ l, c: c * chromaFactor(l), h });
   const brand = (l: number) => hue(brandHue, l);
-  const k = Math.round(contrast) - 1;
-  const light = mode === "light";
+  const L = LIGHTNESS[mode];
 
-  const fgL = light ? [0.32, 0.28, 0.24, 0.2, 0.16][k] : [0.88, 0.91, 0.94, 0.96, 0.98][k];
-  const t: Tokens = {
-    background: n(light ? 0.985 : 0.16),
-    foreground: n(fgL),
-    card: n(light ? 1 : 0.2),
-    muted: n(light ? 0.955 : 0.25),
-    "muted-foreground": n(light ? fgL + 0.28 : fgL - 0.28),
-    border: n(light ? 0.9 : 0.3),
-    input: n(light ? 0.9 : 0.3),
-    secondary: n(light ? 0.94 : 0.27),
-    primary: brand(light ? 0.55 : 0.7),
+  // contrast が 1〜5 の外 (検証していない上書きなど) だと表に無い。従来どおり NaN のまま進める
+  const fgL = L.fg[Math.round(contrast) - 1] ?? Number.NaN;
+  const foreground = n(fgL);
+  return {
+    background: n(L.background),
+    foreground,
+    card: n(L.card),
+    muted: n(L.muted),
+    "muted-foreground": n(fgL + L.mutedFgOffset),
+    border: n(L.border),
+    input: n(L.border),
+    secondary: n(L.secondary),
+    primary: brand(L.primary),
     ring: brand(0.62),
-    accent: fit({ l: light ? 0.95 : 0.28, c: brandChroma * 0.3, h: brandHue }),
-    "accent-foreground": brand(light ? 0.35 : 0.85),
-    "brand-accent": accentHue === null ? brand(light ? 0.55 : 0.7) : hue(accentHue, light ? 0.6 : 0.72, brandChroma * 0.8),
-    destructive: hue(25, light ? 0.55 : 0.62, 0.2),
-    success: hue(150, light ? 0.5 : 0.65, 0.15),
+    accent: fit({ l: L.accent, c: brandChroma * 0.3, h: brandHue }),
+    "accent-foreground": brand(L.accentFg),
+    "brand-accent": accentHue === null ? brand(L.primary) : hue(accentHue, L.brandAccent, brandChroma * 0.8),
+    destructive: hue(25, L.destructive, 0.2),
+    success: hue(150, L.success, 0.15),
     warning: hue(75, 0.75, 0.15),
+    "card-foreground": foreground,
+    "secondary-foreground": foreground,
   };
-  t["card-foreground"] = t.foreground;
-  t["secondary-foreground"] = t.foreground;
-  return t;
 }
 
 /** 塗りの上に載せる文字色。明るい色と暗い色のうちコントラストが高いほうを選ぶ */
@@ -122,21 +162,22 @@ function validate(t: Tokens, seed: Seed): Check[] {
   const textMin = seed.color.contrast >= 4 ? 7 : 4.5; // コントラスト指定が高いテーマはAAA相当
   const checks: Check[] = [];
   const run = (fg: string, bg: string, min: number) => {
-    const r = ensure(t[fg], t[bg], min);
+    const bgColor = get(t, bg);
+    const r = ensure(get(t, fg), bgColor, min);
     t[fg] = r.color;
-    const ratio = contrastRatio(t[fg], t[bg]);
+    const ratio = contrastRatio(r.color, bgColor);
     checks.push({ fg, bg, min, ratio: Math.round(ratio * 100) / 100, adjusted: r.adjusted, pass: ratio >= min });
   };
 
   // 塗りの色は背景に対して3:1以上(UI部品の基準)。先に確定させてから文字色を選ぶ
   for (const fill of ["primary", "destructive", "ring"]) run(fill, "background", 3);
   for (const fill of ["primary", "destructive", "success", "warning", "brand-accent"]) {
-    t[`${fill}-foreground`] = onColor(t[fill], seed);
+    t[`${fill}-foreground`] = onColor(get(t, fill), seed);
     run(`${fill}-foreground`, fill, 4.5);
   }
   run("foreground", "background", textMin);
-  t["card-foreground"] = t.foreground;
-  t["secondary-foreground"] = t.foreground;
+  t["card-foreground"] = get(t, "foreground");
+  t["secondary-foreground"] = get(t, "foreground");
   run("card-foreground", "card", textMin);
   run("secondary-foreground", "secondary", 4.5);
   run("muted-foreground", "background", 4.5);
@@ -155,13 +196,19 @@ const SHADOW = {
   hard: "3px 3px 0 0 var(--foreground)",
 };
 
+const MODES: readonly Mode[] = ["light", "dark"];
+
+function resolveMode(seed: Seed, mode: Mode): { tokens: Record<string, string>; checks: Check[] } {
+  const t = buildTokens(seed, mode);
+  const checks = validate(t, seed);
+  return { tokens: Object.fromEntries(Object.entries(t).map(([k, v]) => [k, css(v)])), checks };
+}
+
 export function resolveTheme(seed: Seed) {
-  const modes = {} as Record<Mode, { tokens: Record<string, string>; checks: Check[] }>;
-  for (const mode of ["light", "dark"] as Mode[]) {
-    const t = buildTokens(seed, mode);
-    const checks = validate(t, seed);
-    modes[mode] = { tokens: Object.fromEntries(Object.entries(t).map(([k, v]) => [k, css(v)])), checks };
-  }
+  const modes: Record<Mode, { tokens: Record<string, string>; checks: Check[] }> = {
+    light: resolveMode(seed, "light"),
+    dark: resolveMode(seed, "dark"),
+  };
   return { seed, modes };
 }
 type Resolved = ReturnType<typeof resolveTheme>;
@@ -215,12 +262,12 @@ export function themeCss({ seed, modes }: Resolved): string {
 /** シード列からテーマ一式を作る。ファイルへの書き出しと表示は呼び出し側が行う */
 export function renderThemeFiles(seeds: Seed[]): { css: string; json: string; failed: number; report: string[] } {
   const themes = seeds.map((seed) => resolveTheme(seed));
-  const tokenNames = Object.keys(themes[0].modes.light.tokens);
+  const tokenNames = Object.keys(at(themes, 0).modes.light.tokens);
 
   let failed = 0;
   const report: string[] = [];
   for (const { seed, modes } of themes) {
-    for (const mode of ["light", "dark"] as Mode[]) {
+    for (const mode of MODES) {
       const { checks } = modes[mode];
       const adjusted = checks.filter((c) => c.adjusted);
       const fails = checks.filter((c) => !c.pass);
@@ -239,17 +286,52 @@ export function renderThemeFiles(seeds: Seed[]): { css: string; json: string; fa
   };
 }
 
+const isNumber = (x: unknown): x is number => typeof x === "number";
+
+function isSeedColor(x: unknown): x is Seed["color"] {
+  if (!isRecord(x)) return false;
+  const { brandHue, brandChroma, accentHue, neutralHue, neutralChroma, contrast } = x;
+  return [brandHue, brandChroma, neutralHue, neutralChroma, contrast].every(isNumber) && (accentHue === null || isNumber(accentHue));
+}
+
+function isSeedShape(x: unknown): x is Seed["shape"] {
+  return isRecord(x) && isNumber(x.radiusPx) && isNumber(x.spacingScale) && isShadowKind(x.shadow);
+}
+
+function isSeedFont(x: unknown): x is Seed["font"] {
+  if (!isRecord(x) || !isFontMood(x.mood)) return false;
+  const names = [x.heading, x.body, x.mono].every((v) => typeof v === "string");
+  return names && (x.pairId === undefined || typeof x.pairId === "string");
+}
+
+function isSeed(x: unknown): x is Seed {
+  return (
+    isRecord(x) &&
+    [x.id, x.name, x.tone].every((v) => typeof v === "string") &&
+    isBaseMode(x.baseMode) &&
+    isSeedColor(x.color) &&
+    isSeedShape(x.shape) &&
+    isSeedFont(x.font)
+  );
+}
+
+/** JSON から読んだシードを検査する。CLI やテストの入力用 */
+export function validateSeed(x: unknown): Seed {
+  if (!isSeed(x)) throw new Error("シードの形が不正です");
+  return x;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const outIdx = args.indexOf("--out");
   const outDir = outIdx >= 0 ? args[outIdx + 1] : "dist";
   const files = args.filter((_, i) => outIdx < 0 || (i !== outIdx && i !== outIdx + 1));
-  if (files.length === 0) {
+  if (files.length === 0 || outDir === undefined) {
     console.error("usage: node generate-theme.ts <seed.json>... [--out dir]");
     process.exit(1);
   }
 
-  const seeds = files.map((f) => JSON.parse(readFileSync(f, "utf8")) as Seed);
+  const seeds = files.map((f) => validateSeed(JSON.parse(readFileSync(f, "utf8"))));
   const { css, json, failed, report } = renderThemeFiles(seeds);
 
   mkdirSync(outDir, { recursive: true });

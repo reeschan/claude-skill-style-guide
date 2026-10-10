@@ -29,18 +29,19 @@ function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<voi
   return Promise.resolve(r).finally(restore);
 }
 
-test("STYLE_GUIDE_JEV_MODULE があればそれを返し、loadJev で読める", async () => {
+void test("STYLE_GUIDE_JEV_MODULE があればそれを返し、loadJev で読める", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sg-jev-"));
   const file = join(dir, "fake.mjs");
   writeFileSync(file, 'export const DEFAULT_ENDPOINT="x";\n');
   await withEnv({ STYLE_GUIDE_JEV_MODULE: file }, async () => {
     assert.equal(jevModulePath(), file);
     const mod = await loadJev();
+    assert.ok(typeof mod === "object" && mod !== null && "DEFAULT_ENDPOINT" in mod);
     assert.equal(mod.DEFAULT_ENDPOINT, "x");
   });
 });
 
-test("共通ディレクトリが無ければ同梱の lib/jev.mjs を返す", async () => {
+void test("共通ディレクトリが無ければ同梱の lib/jev.mjs を返す", async () => {
   const home = mkdtempSync(join(tmpdir(), "sg-home-"));
   await withEnv({ STYLE_GUIDE_JEV_MODULE: undefined, HOME: home, USERPROFILE: home }, () => {
     const bundled = join(dirname(fileURLToPath(import.meta.url)), "jev.mjs");

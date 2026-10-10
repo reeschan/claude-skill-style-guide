@@ -1,6 +1,6 @@
 # claude-skill-style-guide
 
-[![test](https://github.com/reeschan/claude-skill-style-guide/actions/workflows/test.yml/badge.svg)](https://github.com/reeschan/claude-skill-style-guide/actions/workflows/test.yml)
+[![ci](https://github.com/reeschan/claude-skill-style-guide/actions/workflows/ci.yml/badge.svg)](https://github.com/reeschan/claude-skill-style-guide/actions/workflows/ci.yml)
 
 A Claude Code skill that turns a free-form description (e.g. "a calm, Japanese-style invoicing SaaS") into a UI theme: colors, radius, spacing, shadows and fonts.
 It outputs a Tailwind v4 `theme.css`, a `theme.json` and a style guide document.
@@ -98,21 +98,21 @@ node scripts/pipeline.ts run --request request.json --brief brief.json
 
 `~/.claude/style-guide/themes/<id>/` に次の 8 ファイルができます。
 
-| ファイル | 中身 |
-| --- | --- |
-| `request.json` | 入力 (自由記述と明示指定) |
-| `brief.json` | 英語の要約 (ブリーフ) |
-| `estimate.json` | 質問への回答 (推定結果) |
-| `seed.json` | テーマの元になるシード (色・形・フォント) |
+| ファイル           | 中身                                                  |
+| ------------------ | ----------------------------------------------------- |
+| `request.json`     | 入力 (自由記述と明示指定)                             |
+| `brief.json`       | 英語の要約 (ブリーフ)                                 |
+| `estimate.json`    | 質問への回答 (推定結果)                               |
+| `seed.json`        | テーマの元になるシード (色・形・フォント)             |
 | `seed-result.json` | シード化の詳細 (別案、確度の低い項目、推定の出どころ) |
-| `theme.css` | Tailwind v4 のテーマ (CSS 変数) |
-| `theme.json` | ライト/ダーク両モードのトークン |
-| `style-guide.md` | スタイルガイド文書 |
+| `theme.css`        | Tailwind v4 のテーマ (CSS 変数)                       |
+| `theme.json`       | ライト/ダーク両モードのトークン                       |
+| `style-guide.md`   | スタイルガイド文書                                    |
 
 `theme.css` は自分のプロジェクトの CSS から `@import` し、ルート要素に `data-theme="<id>"` を付けて使います。基調と逆のモードにしたいときは `data-mode` を付けます。
 
 ```html
-<html data-theme="aizome" data-mode="dark">
+<html data-theme="aizome" data-mode="dark"></html>
 ```
 
 ## Jev (任意)
@@ -152,8 +152,11 @@ Jev は推定に使う外部 API です。キーは次のどちらかに置き�
 
 ## 開発
 
+スキルを使うだけなら不要ですが、開発には pnpm で検査用の道具 (TypeScript・ESLint・Prettier) を入れます。
+
 ```sh
-node --test --test-reporter=tap core/*.test.ts scripts/*.test.ts app/*.test.ts lib/*.test.ts
+pnpm install
+pnpm check   # lint・書式・型・テストをまとめて通す
 ```
 
 Jev や `claude` CLI は、テストでは偽物に差し替わります。実際のキーは不要です。

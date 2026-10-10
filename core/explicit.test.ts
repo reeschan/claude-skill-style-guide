@@ -12,7 +12,7 @@ const brief = (explicit: Brief["explicit"]): Brief => ({
   explicit,
 });
 
-test("hexToOklch", () => {
+void test("hexToOklch", () => {
   const b = hexToOklch("#0000ff");
   assert.ok(Math.abs(b.l - 0.452) <= 0.002);
   assert.ok(Math.abs(b.c - 0.313) <= 0.002);
@@ -23,7 +23,7 @@ test("hexToOklch", () => {
   assert.equal(w.h, 0);
 });
 
-test("brandColor の解決", () => {
+void test("brandColor の解決", () => {
   const r = resolveExplicit({ prompt: "x", brandColor: "#1e40af" }, null);
   assert.deepEqual(r.skip, ["brand_hue", "chroma"]);
   assert.equal(r.sources["color.brandHue"], "explicit");
@@ -34,7 +34,7 @@ test("brandColor の解決", () => {
   assert.equal(g.fixed.brandHue, undefined);
 });
 
-test("baseMode は request が brief より優先", () => {
+void test("baseMode は request が brief より優先", () => {
   const b = brief({ brandColor: null, baseMode: "dark" });
   assert.equal(resolveExplicit({ prompt: "x", baseMode: "light" }, b).fixed.baseMode, "light");
   const r = resolveExplicit({ prompt: "x" }, b);
@@ -43,7 +43,7 @@ test("baseMode は request が brief より優先", () => {
   assert.equal(r.sources.baseMode, "explicit");
 });
 
-test("fonts 3 つで font_pair を省く", () => {
+void test("fonts 3 つで font_pair を省く", () => {
   const three = resolveExplicit({ prompt: "x", fonts: { heading: "A", body: "B", mono: "C" } }, null);
   assert.deepEqual(three.skip, ["font_pair"]);
   assert.equal(three.sources["font.mono"], "explicit");
@@ -52,14 +52,14 @@ test("fonts 3 つで font_pair を省く", () => {
   assert.deepEqual(two.fixed.fonts, { heading: "A", body: "B" });
 });
 
-test("validateRequest の不正", () => {
+void test("validateRequest の不正", () => {
   assert.throws(() => validateRequest({ prompt: "" }), InputError);
   assert.throws(() => validateRequest({ prompt: "a".repeat(2001) }), InputError);
   assert.throws(() => validateRequest({ prompt: "x", brandColor: "#12345" }), InputError);
   assert.deepEqual(validateRequest({ prompt: " x ", extra: 1 }), { prompt: "x" });
 });
 
-test("validateBrief", () => {
+void test("validateBrief", () => {
   const ok = brief({ brandColor: "#1e40af", baseMode: null });
   assert.deepEqual(validateBrief(ok), ok);
   assert.throws(() => validateBrief({ ...ok, id: "Aizome" }), InputError);

@@ -1,8 +1,22 @@
 import type { Question } from "./types.ts";
+import { get } from "./guards.ts";
 
 export const JEV_MODEL = "jev-1.13.0";
 
-export const HUES = { red: 25, orange: 55, amber: 75, yellow: 100, lime: 125, green: 145, teal: 180, cyan: 210, blue: 255, indigo: 275, violet: 300, pink: 350 } as const;
+export const HUES = {
+  red: 25,
+  orange: 55,
+  amber: 75,
+  yellow: 100,
+  lime: 125,
+  green: 145,
+  teal: 180,
+  cyan: 210,
+  blue: 255,
+  indigo: 275,
+  violet: 300,
+  pink: 350,
+} as const;
 
 export const ESTIMATE_QUESTIONS: Record<string, Question> = {
   brand_hue: {
@@ -106,12 +120,25 @@ export const ESTIMATE_QUESTIONS: Record<string, Question> = {
   },
 };
 
-export const ESTIMATE_KEYS: string[] = ["brand_hue", "neutral_tint", "accent_scheme", "base_mode", "font_mood", "shadow", "use_accent", "chroma", "contrast", "radius", "density", "formality"];
+export const ESTIMATE_KEYS: string[] = [
+  "brand_hue",
+  "neutral_tint",
+  "accent_scheme",
+  "base_mode",
+  "font_mood",
+  "shadow",
+  "use_accent",
+  "chroma",
+  "contrast",
+  "radius",
+  "density",
+  "formality",
+];
 
 export function estimateQuestions(skip: string[]): Record<string, Question> {
   const out: Record<string, Question> = {};
   for (const key of ESTIMATE_KEYS) {
-    if (!skip.includes(key)) out[key] = ESTIMATE_QUESTIONS[key];
+    if (!skip.includes(key)) out[key] = get(ESTIMATE_QUESTIONS, key);
   }
   return out;
 }
