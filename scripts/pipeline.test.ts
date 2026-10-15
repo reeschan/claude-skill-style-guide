@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -249,6 +249,101 @@ void test("8. list が保存済みの id を返す", () => {
   assert.equal(r.status, 0, r.stderr);
   const out = asArray(JSON.parse(r.stdout));
   assert.ok(out.some((t) => isRecord(t) && t.id === "aizome"));
+});
+
+const AIZOME = "examples/seeds/aizome.json";
+const NEON = "examples/seeds/neon.json";
+
+const readSeed = (rel: string): Record<string, unknown> => parseRecord(readFileSync(join(SKILL, rel), "utf8"));
+
+// 例の Seed の一部を差し替えた JSON を一時ディレクトリに書き、パスを返す
+function writeSeedFile(name: string, x: unknown): string {
+  const p = join(tmp, name);
+  writeFileSync(p, JSON.stringify(x), "utf8");
+  return p;
+}
+
+function withChange(path: string[], value: unknown): Record<string, unknown> {
+  const seed = readSeed(AIZOME);
+  let target = seed;
+  for (const key of path.slice(0, -1)) target = asRecord(target[key]);
+  const last = path[path.length - 1];
+  assert.ok(last !== undefined);
+  target[last] = value;
+  return seed;
+}
+
+void test("render: Seed 1 つから css・themes・summary を返す", () => {
+  const r = runSync(["render", "--seed", AIZOME], baseEnv(newHome("render")));
+  assert.equal(r.status, 0, r.stderr);
+  const out = parseRecord(r.stdout);
+  assert.equal(out.dir, null);
+  assert.ok(asString(out.css).startsWith(`@import "tailwindcss";`));
+  assert.ok(asString(out.css).includes(`[data-theme="aizome"]`));
+  assert.equal(asArray(out.themes).length, 1);
+  const summary = asArray(out.summary);
+  assert.equal(summary.length, 1);
+  const first = asRecord(summary[0]);
+  assert.equal(first.id, "aizome");
+  assert.ok(asString(first.fontsUrl).startsWith("https://fonts.googleapis.com/css2?"));
+  const light = asRecord(asRecord(first.checks).light);
+  assert.ok(typeof light.total === "number" && light.total >= 1);
+  assert.equal(typeof asRecord(asRecord(first.checks).dark).adjusted, "number");
+  assert.equal(typeof out.failed, "number");
+});
+
+void test("render: Seed の配列は themes と summary が配列の長さになる", () => {
+  const file = writeSeedFile("two.json", [readSeed(AIZOME), readSeed(NEON)]);
+  const r = runSync(["render", "--seed", file], baseEnv(newHome("render2")));
+  assert.equal(r.status, 0, r.stderr);
+  const out = parseRecord(r.stdout);
+  assert.equal(asArray(out.themes).length, 2);
+  assert.equal(asArray(out.summary).length, 2);
+  assert.ok(asString(out.css).includes(`[data-theme="neon"]`));
+});
+
+void test("render: --out に theme.css と theme.json を書き、dir がそのパス", () => {
+  const home = newHome("render-out");
+  const dir = join(tmp, "render-out");
+  const r = runSync(["render", "--seed", AIZOME, "--out", dir], baseEnv(home));
+  assert.equal(r.status, 0, r.stderr);
+  const out = parseRecord(r.stdout);
+  assert.equal(out.dir, dir);
+  assert.deepStrictEqual(readdirSync(dir).sort(), ["theme.css", "theme.json"]);
+  assert.equal(readFileSync(join(dir, "theme.css"), "utf8"), out.css);
+  assert.equal(asArray(JSON.parse(readFileSync(join(dir, "theme.json"), "utf8"))).length, 1);
+  assert.ok(!existsSync(home));
+});
+
+void test("render: 不正な Seed は終了コード 1 で error: input", () => {
+  const cases: [string, string[], unknown][] = [
+    ["baseMode", ["baseMode"], "blue"],
+    ["contrast が大きすぎる", ["color", "contrast"], 6],
+    ["contrast が小さすぎる", ["color", "contrast"], 0.5],
+    ["id の形", ["id"], "Bad_Id"],
+    ["id が長すぎる", ["id"], "a".repeat(21)],
+    ["shadow", ["shape", "shadow"], "glow"],
+    ["色相が 360", ["color", "brandHue"], 360],
+    ["font.mood", ["font", "mood"], "comic"],
+  ];
+  for (const [label, path, value] of cases) {
+    const file = writeSeedFile("bad.json", withChange(path, value));
+    const r = runSync(["render", "--seed", file], baseEnv(newHome("bad")));
+    assert.equal(r.status, 1, `${label}: ${r.stdout}`);
+    const err = parseRecord(r.stderr);
+    assert.equal(err.error, "input", label);
+    assert.equal(typeof err.message, "string", label);
+    assert.equal(r.stdout, "", label);
+  }
+  const empty = runSync(["render", "--seed", writeSeedFile("empty.json", [])], baseEnv(newHome("bad")));
+  assert.equal(empty.status, 1);
+  assert.equal(parseRecord(empty.stderr).error, "input");
+});
+
+void test("render: --seed なしは終了コード 1 (usage)", () => {
+  const r = runSync(["render"], baseEnv(newHome("render-usage")));
+  assert.equal(r.status, 1);
+  assert.equal(parseRecord(r.stderr).error, "usage");
 });
 
 void test("fonts: 候補と質問を返す / 入力エラーは終了コード 1", () => {
