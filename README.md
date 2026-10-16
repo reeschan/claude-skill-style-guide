@@ -8,13 +8,28 @@ Estimation can be done by Jev (TypeSafe) or by Claude itself; everything after t
 
 自由記述から UI テーマ (配色・角丸・余白・影・フォント) を推定し、Tailwind v4 の `theme.css`・`theme.json`・スタイルガイド文書を作る Claude Code スキルです。
 
-![作業台: ダーク基調のニュートラルなテーマ。このスキルの Web アプリ自体の見た目](docs/images/app-workbench.png)
+## アーキテクチャ
 
-ダーク基調でニュートラルなテーマ「作業台」を Web アプリで開いたところ。
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/architecture-dark.svg">
+  <img src="docs/architecture/architecture-light.svg" alt="style-guide のアーキテクチャ図。Claude Code か Web アプリから入った自由記述が、ローカルの pipeline と core で推定・シード化・テーマ生成され、themes/<id>/ に保存される。推定は Jev か claude CLI に任せられる">
+</picture>
 
-![藍の請求書: ライト基調で明朝体のテーマ](docs/images/app-wa-invoice.png)
+図のソースは `docs/architecture/architecture.d2` です。構成を変えたら直して、`python ~/.claude/skills/arch-diagram/versions/v1.1/scripts/render.py docs/architecture/architecture.d2` で描き直します (arch-diagram スキルを使います)。
 
-ライト基調で明朝体を使ったテーマ「藍の請求書」を Web アプリで開いたところ。
+## 画面
+
+![藍の請求書: ライト基調で明朝体のテーマを Web アプリで開いたところ](docs/images/app-wa-invoice.png)
+
+ライト基調で明朝体を使ったテーマ「藍の請求書」。右のプレビューに、ボタン・カード・フォーム・表がテーマの値で並びます。
+
+![作業台: ダーク基調のテーマ](docs/images/app-workbench.png)
+
+ダーク基調でニュートラルなテーマ「作業台」。同じ画面で、テーマごとに配色と書体が切り替わります。
+
+![調整パネルとコントラスト表](docs/images/app-adjust-contrast.png)
+
+左の調整パネル (スライダーと選択) と、プレビュー下のコントラスト表 (WCAG の PASS / FAIL)。
 
 ## 特長
 
