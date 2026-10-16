@@ -8,13 +8,28 @@ Estimation can be done by Jev (TypeSafe) or by Claude itself; everything after t
 
 自由記述から UI テーマ (配色・角丸・余白・影・フォント) を推定し、Tailwind v4 の `theme.css`・`theme.json`・スタイルガイド文書を作る Claude Code スキルです。
 
-![作業台: ダーク基調のニュートラルなテーマ。このスキルの Web アプリ自体の見た目](docs/images/app-workbench.png)
+## アーキテクチャ
 
-ダーク基調でニュートラルなテーマ「作業台」を Web アプリで開いたところ。
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/architecture-dark.svg">
+  <img src="docs/architecture/architecture-light.svg" alt="style-guide のアーキテクチャ図。Claude Code か Web アプリから入った自由記述が、ローカルの pipeline と core で推定・シード化・テーマ生成され、themes/<id>/ に保存される。推定は Jev か claude CLI に任せられる">
+</picture>
 
-![藍の請求書: ライト基調で明朝体のテーマ](docs/images/app-wa-invoice.png)
+図のソースは `docs/architecture/architecture.d2` です。構成を変えたら直して、`python ~/.claude/skills/arch-diagram/versions/v1.1/scripts/render.py docs/architecture/architecture.d2` で描き直します (arch-diagram スキルを使います)。
 
-ライト基調で明朝体を使ったテーマ「藍の請求書」を Web アプリで開いたところ。
+## 画面
+
+![藍の請求書: ライト基調で明朝体のテーマを Web アプリで開いたところ](docs/images/app-wa-invoice.png)
+
+ライト基調で明朝体を使ったテーマ「藍の請求書」。右のプレビューに、ボタン・カード・フォーム・表がテーマの値で並びます。
+
+![作業台: ダーク基調のテーマ](docs/images/app-workbench.png)
+
+ダーク基調でニュートラルなテーマ「作業台」。同じ画面で、テーマごとに配色と書体が切り替わります。
+
+![調整パネルとコントラスト表](docs/images/app-adjust-contrast.png)
+
+左の調整パネル (スライダーと選択) と、プレビュー下のコントラスト表 (WCAG の PASS / FAIL)。
 
 ## 特長
 
@@ -145,10 +160,22 @@ Jev は推定に使う外部 API です。キーは次のどちらかに置き�
 
 - `core/`: 明示指定・質問セット・フォント選定・シード化・テーマ生成・保存
 - `data/`: フォントカタログ (`fonts.json`)
-- `scripts/`: CLI (`pipeline.ts`: `questions` / `fonts` / `run` / `list`)
+- `scripts/`: CLI (`pipeline.ts`: `questions` / `fonts` / `run` / `render` / `list`)
 - `app/`: Web アプリ (ローカルサーバーと画面)
 - `lib/`: Jev クライアント (`jev.mjs`) と読み込み
 - `examples/`: テスト用の例 (シードと期待するテーマ)
+
+## ほかのツールから使う (`render --seed`)
+
+推定を通さず、`Seed` からテーマだけを作る入口です。手順 6 だけを実行するので決定的で、Jev や `claude` CLI を呼びません。[design-studio](https://github.com/reeschan/claude-skill-design-studio) はこれでテーマを作っています。
+
+```sh
+node scripts/pipeline.ts render --seed seed.json [--out DIR]
+```
+
+- `--seed` には `Seed` 1 つか、その配列の JSON を渡します
+- 標準出力に JSON を返します: `css` (`theme.css` の全文)、`themes` (テーマごとの `id`・`name`・Google Fonts の URL `fontsUrl`・コントラストの結果 `checks`)、`summary`、`failed`、`dir`。`--out` を付けると、そのディレクトリに `theme.css` / `theme.json` も書き出し、`dir` にその絶対パスが入ります
+- コントラストに FAIL があっても終了コードは 0 で、件数は `failed` に入ります
 
 ## 開発
 

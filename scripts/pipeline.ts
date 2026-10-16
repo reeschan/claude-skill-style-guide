@@ -3,16 +3,20 @@
 //   node scripts/pipeline.ts fonts --request R.json --brief B.json --estimate E.json
 //   node scripts/pipeline.ts run --request R.json --brief B.json [--estimate E.json] [--estimate-source jev|llm-fallback] [--out DIR] [--dry-run]
 //   node scripts/pipeline.ts list
+//   node scripts/pipeline.ts render --seed S.json [--out DIR]   (Seed 1 つ、または Seed の配列から theme.css / theme.json を作る。design-studio が使う)
 // 標準出力には JSON を 1 つだけ出す。エラーは標準エラーに {"error": ...}
 // 終了コード: 0 成功、1 入力エラー、2 推定が必要 (Jev キー無し)、3 Jev の失敗
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { loadJev as loadJevShared } from "../lib/load-jev.ts";
 import { parseArgs } from "node:util";
 import type { Brief, Estimate, FontPair, Question, Resolved, ThemeRequest } from "../core/types.ts";
 import { InputError, resolveExplicit, validateBrief, validateRequest } from "../core/explicit.ts";
 import { JEV_MODEL, estimateQuestions } from "../core/questions.ts";
 import { requiredKeys, validateEstimate } from "../core/seed.ts";
-import { fontQuestion, loadCatalog, selectCandidates, validateFixedFonts } from "../core/fonts.ts";
+import { fontQuestion, googleFontsUrl, loadCatalog, selectCandidates, validateFixedFonts } from "../core/fonts.ts";
+import { renderThemeFiles, resolveTheme } from "../core/generate-theme.ts";
+import { validateSeeds } from "../core/validate-seed.ts";
 import { buildBundle, listThemes, writeBundle } from "../core/bundle.ts";
 import type { Bundle } from "../core/bundle.ts";
 
@@ -241,10 +245,10 @@ async function withFontPair(
 type CheckSummary = { pass: number; total: number; adjusted: number };
 
 // コントラスト検査の件数をモードごとにまとめる
-function summarizeChecks(bundle: Bundle): Record<string, CheckSummary> {
+function summarizeChecks(theme: Bundle["theme"]): Record<string, CheckSummary> {
   const checks: Record<string, CheckSummary> = {};
   for (const mode of ["light", "dark"] as const) {
-    const cs = bundle.theme.modes[mode].checks;
+    const cs = theme.modes[mode].checks;
     checks[mode] = { pass: cs.filter((c) => c.pass).length, total: cs.length, adjusted: cs.filter((c) => c.adjusted).length };
   }
   return checks;
@@ -275,9 +279,33 @@ async function cmdRun(values: Record<string, unknown>): Promise<unknown> {
     alternatives: sr.alternatives,
     sources: sr.sources,
     lowConfidence: sr.lowConfidence,
-    checks: summarizeChecks(bundle),
+    checks: summarizeChecks(bundle.theme),
     fontsUrl: bundle.fontsUrl,
   };
+}
+
+// Seed から theme.css / theme.json を作る。コントラストの FAIL があっても失敗にはせず、件数を failed で返す
+function cmdRender(values: Record<string, unknown>): unknown {
+  const seeds = validateSeeds(readJson(need(values, "seed"), "seed"));
+  const files = renderThemeFiles(seeds);
+  const catalog = loadCatalog();
+  const themes = seeds.map((seed) => resolveTheme(seed));
+  const summary = themes.map((theme) => {
+    const { seed } = theme;
+    const pair = catalog.find((p) => p.id === seed.font.pairId) ?? null;
+    return { id: seed.id, name: seed.name, fontsUrl: googleFontsUrl(seed.font, pair), checks: summarizeChecks(theme) };
+  });
+  const dir = typeof values.out === "string" ? writeRendered(values.out, files) : null;
+  return { dir, css: files.css, themes, summary, failed: files.failed };
+}
+
+// --out の下に theme.css と theme.json を書き、絶対パスを返す
+function writeRendered(out: string, files: { css: string; json: string }): string {
+  const dir = resolve(out);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "theme.css"), files.css, "utf8");
+  writeFileSync(join(dir, "theme.json"), files.json, "utf8");
+  return dir;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +323,7 @@ function parseCli(argv: string[]): { command: string; values: Record<string, unk
         brief: { type: "string" },
         estimate: { type: "string" },
         "estimate-source": { type: "string" },
+        seed: { type: "string" },
         out: { type: "string" },
         "dry-run": { type: "boolean" },
       },
@@ -305,7 +334,7 @@ function parseCli(argv: string[]): { command: string; values: Record<string, unk
   const { values, positionals } = parsed;
   const [command] = positionals;
   if (positionals.length !== 1 || command === undefined)
-    throw usage("サブコマンドを 1 つ指定してください (questions / fonts / run / list)");
+    throw usage("サブコマンドを 1 つ指定してください (questions / fonts / run / render / list)");
   return { command, values };
 }
 
@@ -317,6 +346,8 @@ async function runCommand(command: string, values: Record<string, unknown>): Pro
       return cmdFonts(values);
     case "run":
       return await cmdRun(values);
+    case "render":
+      return cmdRender(values);
     case "list":
       return listThemes();
     default:

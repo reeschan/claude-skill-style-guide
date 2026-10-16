@@ -1,0 +1,106 @@
+# claude-skill-style-guide のアーキテクチャ図
+# __MONO__ は単色ロゴの色。render.py がライト用 (000000) とダーク用 (ffffff) に置き換えて 2 枚描く
+# 描き直し: python ~/.claude/skills/arch-diagram/versions/v1.1/scripts/render.py docs/architecture/architecture.d2
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    pad: 40
+  }
+}
+
+classes: {
+  svc: {
+    shape: rectangle
+    style: {
+      border-radius: 12
+      font-size: 15
+    }
+  }
+  ext: {
+    shape: image
+    width: 64
+    height: 64
+    label.near: outside-bottom-center
+  }
+  zone: {
+    style.border-radius: 16
+  }
+  saas: {
+    style: {
+      border-radius: 16
+      stroke-dash: 3
+    }
+  }
+}
+
+user: 利用者 {
+  class: ext
+  icon: https://icons.terrastruct.com/essentials%2F359-users.svg
+}
+
+claude: Claude Code {
+  class: zone
+  icon: https://cdn.simpleicons.org/anthropic/__MONO__
+
+  agent: "エージェント\n自由記述 → ブリーフ" {
+    class: svc
+    icon: https://cdn.simpleicons.org/anthropic/__MONO__
+  }
+}
+
+skill: "style-guide スキル (ローカル)" {
+  class: zone
+  icon: https://cdn.simpleicons.org/nodedotjs
+
+  cli: "scripts/pipeline.ts\nCLI" {
+    class: svc
+    icon: https://cdn.simpleicons.org/typescript
+  }
+  core: "core/\n推定の取りまとめ・シード化・テーマ生成" {
+    class: svc
+    icon: https://cdn.simpleicons.org/typescript
+  }
+  server: "app/server.ts\n127.0.0.1 のサーバー" {
+    class: svc
+    icon: https://cdn.simpleicons.org/nodedotjs
+  }
+}
+
+browser: ブラウザ {
+  class: zone
+  icon: https://icons.terrastruct.com/tech%2Fbrowser-2.svg
+
+  web: "Web アプリ\n調整・プレビュー・書き出し" {
+    class: svc
+    icon: https://cdn.simpleicons.org/html5
+  }
+}
+
+store: "themes/<id>/\ntheme.css・theme.json ほか 8 ファイル" {
+  shape: cylinder
+}
+
+llm: 推定の外部サービス {
+  class: saas
+  direction: down
+
+  jev: "Jev (TypeSafe)\n任意・推定を返す" {
+    class: svc
+  }
+  cli: "claude CLI\nブリーフ化・推定の代行" {
+    class: svc
+    icon: https://cdn.simpleicons.org/anthropic/__MONO__
+  }
+}
+
+user -> claude.agent: /style-guide <自由記述>
+claude.agent -> skill.cli: ブリーフ・推定
+skill.cli -> skill.core
+user -> browser.web: /style-guide app
+browser.web <-> skill.server: 生成・調整
+skill.server -> skill.core
+skill.core -> store: 保存
+skill.core -> llm.jev: ブリーフと質問 {style.stroke-dash: 4}
+skill.server -> llm.cli: 推定の代行 {style.stroke-dash: 4}
