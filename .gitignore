@@ -3,3 +3,6 @@ node_modules/
 app/check*.js
 .DS_Store
 Thumbs.db
+
+# オーケストレーションの作業記録
+docs/pbi/
