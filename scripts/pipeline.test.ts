@@ -315,6 +315,75 @@ void test("render: --out に theme.css と theme.json を書き、dir がその�
   assert.ok(!existsSync(home));
 });
 
+void test("render --doc: Seed 1 つから docs を返す", () => {
+  const r = runSync(["render", "--seed", AIZOME, "--doc"], baseEnv(newHome("render-doc")));
+  assert.equal(r.status, 0, r.stderr);
+  const docs = asArray(parseRecord(r.stdout).docs);
+  assert.equal(docs.length, 1);
+  const doc = asRecord(docs[0]);
+  assert.equal(doc.id, "aizome");
+  const markdown = asString(doc.markdown);
+  assert.ok(markdown.startsWith("# "));
+  assert.ok(markdown.includes("## 色トークン"));
+  assert.ok(markdown.includes("## コントラスト"));
+});
+
+void test("render --doc: 同じ入力なら 2 回でも同じ文書 (決定的)", () => {
+  const env = baseEnv(newHome("render-doc-deterministic"));
+  const args = ["render", "--seed", AIZOME, "--doc"];
+  const first = runSync(args, env);
+  assert.equal(first.status, 0, first.stderr);
+  const second = runSync(args, env);
+  assert.equal(second.status, 0, second.stderr);
+  const firstDoc = asRecord(asArray(parseRecord(first.stdout).docs)[0]);
+  const secondDoc = asRecord(asArray(parseRecord(second.stdout).docs)[0]);
+  assert.equal(asString(firstDoc.markdown), asString(secondDoc.markdown));
+});
+
+void test("render --doc: Seed の配列は docs が Seed と同じ順", () => {
+  const file = writeSeedFile("two-doc.json", [readSeed(AIZOME), readSeed(NEON)]);
+  const r = runSync(["render", "--seed", file, "--doc"], baseEnv(newHome("render-doc-array")));
+  assert.equal(r.status, 0, r.stderr);
+  const docs = asArray(parseRecord(r.stdout).docs);
+  assert.equal(docs.length, 2);
+  assert.deepStrictEqual(
+    docs.map((d) => asRecord(d).id),
+    ["aizome", "neon"],
+  );
+});
+
+void test("render: --doc なしは docs キーを出さず、キーの並びが今のまま", () => {
+  const r = runSync(["render", "--seed", AIZOME], baseEnv(newHome("render-nodoc")));
+  assert.equal(r.status, 0, r.stderr);
+  const out = parseRecord(r.stdout);
+  assert.ok(!("docs" in out));
+  assert.deepStrictEqual(Object.keys(out), ["dir", "css", "themes", "summary", "failed"]);
+});
+
+void test("render --doc --out: Seed 1 つなら style-guide.md も書く", () => {
+  const dir = join(tmp, "render-doc-out");
+  const r = runSync(["render", "--seed", AIZOME, "--doc", "--out", dir], baseEnv(newHome("render-doc-out")));
+  assert.equal(r.status, 0, r.stderr);
+  const out = parseRecord(r.stdout);
+  assert.deepStrictEqual(readdirSync(dir).sort(), ["style-guide.md", "theme.css", "theme.json"]);
+  const doc = asRecord(asArray(out.docs)[0]);
+  assert.equal(readFileSync(join(dir, "style-guide.md"), "utf8"), asString(doc.markdown));
+});
+
+void test("render --doc --out: Seed 2 つなら id ごとの style-guide-<id>.md を書く", () => {
+  const file = writeSeedFile("two-doc-out.json", [readSeed(AIZOME), readSeed(NEON)]);
+  const dir = join(tmp, "render-doc-out2");
+  const r = runSync(["render", "--seed", file, "--doc", "--out", dir], baseEnv(newHome("render-doc-out2")));
+  assert.equal(r.status, 0, r.stderr);
+  const docs = asArray(parseRecord(r.stdout).docs);
+  assert.deepStrictEqual(readdirSync(dir).sort(), ["style-guide-aizome.md", "style-guide-neon.md", "theme.css", "theme.json"]);
+  for (const d of docs) {
+    const doc = asRecord(d);
+    const path = join(dir, `style-guide-${asString(doc.id)}.md`);
+    assert.equal(readFileSync(path, "utf8"), asString(doc.markdown));
+  }
+});
+
 void test("render: 不正な Seed は終了コード 1 で error: input", () => {
   const cases: [string, string[], unknown][] = [
     ["baseMode", ["baseMode"], "blue"],

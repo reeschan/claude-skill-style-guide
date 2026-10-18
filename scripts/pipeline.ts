@@ -3,14 +3,14 @@
 //   node scripts/pipeline.ts fonts --request R.json --brief B.json --estimate E.json
 //   node scripts/pipeline.ts run --request R.json --brief B.json [--estimate E.json] [--estimate-source jev|llm-fallback] [--out DIR] [--dry-run]
 //   node scripts/pipeline.ts list
-//   node scripts/pipeline.ts render --seed S.json [--out DIR]   (Seed 1 つ、または Seed の配列から theme.css / theme.json を作る。design-studio が使う)
+//   node scripts/pipeline.ts render --seed S.json [--out DIR] [--doc]   (Seed 1 つ、または Seed の配列から theme.css / theme.json を作る。--doc を付けるとスタイルガイドの文書 (Markdown) も返す。design-studio が使う)
 // 標準出力には JSON を 1 つだけ出す。エラーは標準エラーに {"error": ...}
 // 終了コード: 0 成功、1 入力エラー、2 推定が必要 (Jev キー無し)、3 Jev の失敗
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadJev as loadJevShared } from "../lib/load-jev.ts";
 import { parseArgs } from "node:util";
-import type { Brief, Estimate, FontPair, Question, Resolved, ThemeRequest } from "../core/types.ts";
+import type { Brief, Estimate, FontPair, Question, Resolved, Seed, ThemeRequest } from "../core/types.ts";
 import { InputError, resolveExplicit, validateBrief, validateRequest } from "../core/explicit.ts";
 import { JEV_MODEL, estimateQuestions } from "../core/questions.ts";
 import { requiredKeys, validateEstimate } from "../core/seed.ts";
@@ -19,6 +19,7 @@ import { renderThemeFiles, resolveTheme } from "../core/generate-theme.ts";
 import { validateSeeds } from "../core/validate-seed.ts";
 import { buildBundle, listThemes, writeBundle } from "../core/bundle.ts";
 import type { Bundle } from "../core/bundle.ts";
+import { renderStyleGuideMd } from "../core/style-guide-md.ts";
 
 const EXIT_OK = 0;
 const EXIT_INPUT = 1;
@@ -285,18 +286,52 @@ async function cmdRun(values: Record<string, unknown>): Promise<unknown> {
 }
 
 // Seed から theme.css / theme.json を作る。コントラストの FAIL があっても失敗にはせず、件数を failed で返す
+// --doc のときは、同じ材料からスタイルガイドの文書 (Markdown) も作って docs に入れる
 function cmdRender(values: Record<string, unknown>): unknown {
   const seeds = validateSeeds(readJson(need(values, "seed"), "seed"));
   const files = renderThemeFiles(seeds);
-  const catalog = loadCatalog();
-  const themes = seeds.map((seed) => resolveTheme(seed));
-  const summary = themes.map((theme) => {
-    const { seed } = theme;
-    const pair = catalog.find((p) => p.id === seed.font.pairId) ?? null;
-    return { id: seed.id, name: seed.name, fontsUrl: googleFontsUrl(seed.font, pair), checks: summarizeChecks(theme) };
-  });
+  const items = renderedItems(seeds, loadCatalog());
+  const docs = values.doc === true ? docsOf(items) : null;
   const dir = typeof values.out === "string" ? writeRendered(values.out, files) : null;
-  return { dir, css: files.css, themes, summary, failed: files.failed };
+  if (dir !== null && docs !== null) writeDocs(dir, docs);
+  const out = {
+    dir,
+    css: files.css,
+    themes: items.map((item) => item.theme),
+    summary: items.map(summaryOf),
+    failed: files.failed,
+  };
+  return docs === null ? out : { ...out, docs };
+}
+
+type RenderedItem = { seed: Seed; theme: ReturnType<typeof resolveTheme>; pair: FontPair | null; fontsUrl: string };
+type RenderedDoc = { id: string; markdown: string };
+
+// summary と文書で使う材料 (テーマ・フォントの組・URL) を Seed ごとに 1 回だけそろえる
+function renderedItems(seeds: Seed[], catalog: FontPair[]): RenderedItem[] {
+  return seeds.map((seed) => {
+    const theme = resolveTheme(seed);
+    const pair = catalog.find((p) => p.id === seed.font.pairId) ?? null;
+    return { seed, theme, pair, fontsUrl: googleFontsUrl(seed.font, pair) };
+  });
+}
+
+function summaryOf(item: RenderedItem): { id: string; name: string; fontsUrl: string; checks: ReturnType<typeof summarizeChecks> } {
+  const { seed, theme, fontsUrl } = item;
+  return { id: seed.id, name: seed.name, fontsUrl, checks: summarizeChecks(theme) };
+}
+
+// Seed から決定的に文書を作る。推定は通さない (出どころと別案は空)
+function docsOf(items: RenderedItem[]): RenderedDoc[] {
+  return items.map(({ seed, theme, pair, fontsUrl }) => ({
+    id: seed.id,
+    markdown: renderStyleGuideMd({
+      seedResult: { seed, alternatives: [], sources: {}, lowConfidence: [] },
+      theme,
+      fontPair: pair,
+      fontsUrl,
+    }),
+  }));
 }
 
 // --out の下に theme.css と theme.json を書き、絶対パスを返す
@@ -306,6 +341,15 @@ function writeRendered(out: string, files: { css: string; json: string }): strin
   writeFileSync(join(dir, "theme.css"), files.css, "utf8");
   writeFileSync(join(dir, "theme.json"), files.json, "utf8");
   return dir;
+}
+
+// --out の下に文書を書く。Seed が 1 つなら style-guide.md、2 つ以上なら id ごとの名前にする
+function writeDocs(dir: string, docs: RenderedDoc[]): void {
+  const single = docs.length === 1;
+  for (const doc of docs) {
+    const name = single ? "style-guide.md" : `style-guide-${doc.id}.md`;
+    writeFileSync(join(dir, name), doc.markdown, "utf8");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +369,7 @@ function parseCli(argv: string[]): { command: string; values: Record<string, unk
         "estimate-source": { type: "string" },
         seed: { type: "string" },
         out: { type: "string" },
+        doc: { type: "boolean" },
         "dry-run": { type: "boolean" },
       },
     });
