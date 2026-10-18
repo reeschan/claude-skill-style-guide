@@ -170,11 +170,12 @@ Jev は推定に使う外部 API です。キーは次のどちらかに置き�
 推定を通さず、`Seed` からテーマだけを作る入口です。手順 6 だけを実行するので決定的で、Jev や `claude` CLI を呼びません。[design-studio](https://github.com/reeschan/claude-skill-design-studio) はこれでテーマを作っています。
 
 ```sh
-node scripts/pipeline.ts render --seed seed.json [--out DIR]
+node scripts/pipeline.ts render --seed seed.json [--out DIR] [--doc]
 ```
 
 - `--seed` には `Seed` 1 つか、その配列の JSON を渡します
 - 標準出力に JSON を返します: `css` (`theme.css` の全文)、`themes` (テーマごとの `id`・`name`・Google Fonts の URL `fontsUrl`・コントラストの結果 `checks`)、`summary`、`failed`、`dir`。`--out` を付けると、そのディレクトリに `theme.css` / `theme.json` も書き出し、`dir` にその絶対パスが入ります
+- `--doc` を付けると、Seed ごとのスタイルガイド文書 (Markdown) を `docs` (`id` と `markdown` の配列、Seed と同じ順) で返します。`--out` と一緒なら、Seed 1 つは `style-guide.md`、2 つ以上は `style-guide-<id>.md` も書きます。推定を通さないので、文書の「推定の出どころ」は空、「別案」は「なし」になります。`--doc` を付けないときの出力は変わりません
 - コントラストに FAIL があっても終了コードは 0 で、件数は `failed` に入ります
 
 ## 開発
