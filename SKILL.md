@@ -20,7 +20,7 @@ description: 自由記述 (例「落ち着いた和風の請求書 SaaS」) か�
 
 - `<スキル>/core/`: 明示指定の確定・質問セット・フォント選定・シード化・テーマ生成・保存の各モジュール
 - `<スキル>/data/fonts.json`: フォントカタログ
-- `<スキル>/scripts/pipeline.ts`: CLI (`questions` / `fonts` / `run` / `render` / `list`)。`render --seed <Seed の JSON> [--out DIR]` は Seed (1 つ、または配列) から `theme.css` / `theme.json` / コントラストの結果 / Google Fonts の URL を JSON で返す (design-studio から使われる。コントラストの FAIL があっても終了コードは 0 で、件数は `failed`)
+- `<スキル>/scripts/pipeline.ts`: CLI (`questions` / `fonts` / `run` / `render` / `list`)。`render --seed <Seed の JSON> [--out DIR] [--doc]` は Seed (1 つ、または配列) から `theme.css` / `theme.json` / コントラストの結果 / Google Fonts の URL を JSON で返す。`--doc` を付けるとスタイルガイド文書 (Markdown) も `docs` で返す (design-studio から使われる。コントラストの FAIL があっても終了コードは 0 で、件数は `failed`)
 - `<スキル>/app/`: Web アプリ (`server.ts` がローカルサーバー、`index.html` が画面)
 
 保存先は `${STYLE_GUIDE_HOME:-~/.claude/style-guide}/themes/<id>/` で、次の 8 ファイルが入る: `request.json`, `brief.json`, `estimate.json`, `seed.json`, `seed-result.json`, `theme.css`, `theme.json`, `style-guide.md`。
